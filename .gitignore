@@ -1,0 +1,21 @@
+# Dependencies and builds
+node_modules/
+dist/
+coverage/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and local state
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vite/
+
+# Editor settings
+.idea/
+.vscode/
+*.swp
