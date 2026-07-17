@@ -6,7 +6,7 @@ import { Server } from 'socket.io'
 import mongoose from 'mongoose'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerRequestRoutes } from './routes/requests.js'
+import { registerRequestRoutes, startCleanupScheduler } from './routes/requests.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -31,6 +31,7 @@ mongoose.connect(mongoUri)
   .then(() => {
     isMongoConnected = true
     console.log('MongoDB connected successfully.')
+    startCleanupScheduler(dbContext)
   })
   .catch((err) => {
     console.error('MongoDB connection failed. Falling back to in-memory store. Error:', err.message)

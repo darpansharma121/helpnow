@@ -58,12 +58,18 @@ const SOCKET_URL = API_URL.replace('/api/v1', '')
 function App() {
   const [requests, setRequests] = useState([])
   const [currentPersonaKey, setCurrentPersonaKey] = useState(() => localStorage.getItem('helpnow_persona') || 'aarav')
+  const [clientUserId, setClientUserId] = useState(() => localStorage.getItem('helpnow_userId') || crypto.randomUUID())
   const [selectedRequestId, setSelectedRequestId] = useState(null)
   
   // Persona change listener
   useEffect(() => {
     localStorage.setItem('helpnow_persona', currentPersonaKey)
   }, [currentPersonaKey])
+
+  // Persist clientUserId
+  useEffect(() => {
+    localStorage.setItem('helpnow_userId', clientUserId)
+  }, [clientUserId])
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('')
@@ -92,6 +98,7 @@ function App() {
   const [isSearchingMap, setIsSearchingMap] = useState(false)
 
   // UI state
+  const [mapVisible, setMapVisible] = useState(true)
   const [toasts, setToasts] = useState([])
   const [socketConnected, setSocketConnected] = useState(false)
   const [socketError, setSocketError] = useState(null)
@@ -207,7 +214,7 @@ function App() {
   // Join/Leave Chat Rooms dynamically
   useEffect(() => {
     if (socketRef.current && selectedRequestId) {
-      socketRef.current.emit('chat:join', { requestId: selectedRequestId, userId: activePersonaRef.current.id })
+      socketRef.current.emit('chat:join', { requestId: selectedRequestId, userId: clientUserId })
       return () => {
         socketRef.current.emit('chat:leave', { requestId: selectedRequestId })
       }
@@ -263,7 +270,7 @@ function App() {
         mapInstanceRef.current = null
       }
     }
-  }, [])
+  }, [mapVisible])
 
   // Map Click Listener
   useEffect(() => {
@@ -788,16 +795,23 @@ function App() {
               Helper
             </button>
           </div>
+          {/* Map visibility toggle */}
+          <button
+            onClick={() => setMapVisible(v => !v)}
+            className="text-2xs px-3 py-1.5 rounded-md bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 font-bold transition-all"
+          >
+            {mapVisible ? 'Hide Map' : 'Show Map'}
+          </button>
         </div>
       </nav>
 
       {/* ----------------------------------------------------
           MAIN SCREEN LAYOUT
          ---------------------------------------------------- */}
-      <section className="flex-1 grid lg:grid-cols-[460px_1fr] overflow-hidden relative min-h-[calc(100vh-69px)]">
-        
-        {/* SIDEBAR */}
-        <aside className="border-r border-[#ebdcd0]/75 bg-[#fdfcfb] flex flex-col z-20 shadow-xs relative max-h-[calc(100vh-69px)] overflow-y-auto">
+        <section className={`flex-1 grid ${mapVisible ? 'lg:grid-cols-[460px_1fr]' : 'lg:grid-cols-1'} gap-4 overflow-hidden relative min-h-[calc(100vh-69px)]`}>
+          
+          {/* SIDEBAR */}
+          <aside className="border-r border-[#ebdcd0]/75 bg-[#fdfcfb] flex flex-col z-20 shadow-xs relative max-h-[calc(100vh-69px)] overflow-y-auto">
           
           {/* Create Request Mode Form View */}
           {isCreatingRequest ? (
@@ -1235,7 +1249,12 @@ function App() {
               {/* Sidebar Header */}
               <div className="p-6 pb-3.5">
                 <div className="flex items-center justify-between">
-                  <h1 className="text-base font-black text-slate-800">Requests Feed</h1>
+                  <div>
+                    <h1 className="text-base font-black text-slate-800">Today's Requests</h1>
+                    <p className="text-3xs text-slate-400 font-semibold mt-0.5">
+                      {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                    </p>
+                  </div>
                   {activePersona.role === 'requester' && (
                     <button
                       onClick={() => {
@@ -1249,7 +1268,7 @@ function App() {
                     </button>
                   )}
                 </div>
-                <p className="text-3xs text-slate-500 mt-0.5">Filter and review nearby community posts</p>
+                <p className="text-3xs text-slate-500 mt-1">Showing only today's community posts · auto-cleaned after 5 days</p>
               </div>
 
               {/* Search & Filters */}
@@ -1404,72 +1423,76 @@ function App() {
         </aside>
 
         {/* MAP CONTAINER */}
-        <div className="w-full h-full relative z-10">
-          <div id="map-container" ref={mapRef} className="w-full h-full min-h-[400px] lg:min-h-0 bg-[#f7f4ee]" />
-          
-          <div className="absolute top-4 left-4 bg-white/95 backdrop-blur-md border border-[#ebdcd0]/75 px-3 py-2 rounded-lg z-20 shadow-sm pointer-events-none">
-            <p className="text-3xs font-extrabold text-rose-500 flex items-center gap-1.5 uppercase tracking-wider">
-              <span className="h-1.5 w-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
-              Neighborhood Help Map
-            </p>
-            <p className="text-4xs text-slate-500 font-mono mt-0.5">Leaflet OSM Light · Positron</p>
+        {mapVisible && (
+          <div className="w-full h-full relative z-10 p-2">
+            <div id="map-container" ref={mapRef} className="w-full h-full min-h-[400px] lg:min-h-0 bg-[#f7f4ee]" />
+            
+            <div className="absolute top-4 left-4 bg-white/95 backdrop-blur-md border border-[#ebdcd0]/75 px-3 py-2 rounded-lg z-20 shadow-sm pointer-events-none">
+              <p className="text-3xs font-extrabold text-rose-500 flex items-center gap-1.5 uppercase tracking-wider">
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
+                Neighborhood Help Map
+              </p>
+              <p className="text-4xs text-slate-500 font-mono mt-0.5">Leaflet OSM Light · Positron</p>
+            </div>
           </div>
+        )}
 
-          {/* Floating Address Search Panel */}
-          <div className="absolute top-4 right-4 z-20 w-80 flex flex-col gap-2">
-            <div className="bg-white/95 backdrop-blur-md border border-[#ebdcd0]/75 p-2 rounded-xl shadow-md flex flex-col gap-1.5">
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search address or area..."
-                    value={mapSearchQuery}
-                    onChange={(e) => setMapSearchQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        handleMapSearchSubmit()
-                      }
-                    }}
-                    className="w-full bg-[#faf8f5] border border-slate-200 rounded-lg pl-8 pr-2 py-1.5 text-xs focus:outline-none focus:border-rose-500 font-semibold"
-                  />
+          {/* Floating Address Search Panel (inside map area) */}
+          {mapVisible && (
+            <div className="absolute top-4 right-4 z-20 w-80 flex flex-col gap-2">
+              <div className="bg-white/95 backdrop-blur-md border border-[#ebdcd0]/75 p-2 rounded-xl shadow-md flex flex-col gap-1.5">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Search address or area..."
+                      value={mapSearchQuery}
+                      onChange={(e) => setMapSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          handleMapSearchSubmit()
+                        }
+                      }}
+                      className="w-full bg-[#faf8f5] border border-slate-200 rounded-lg pl-8 pr-2 py-1.5 text-xs focus:outline-none focus:border-rose-500 font-semibold"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleMapSearchSubmit}
+                    disabled={isSearchingMap}
+                    className="bg-rose-500 hover:bg-rose-600 text-white font-bold px-3 py-1.5 rounded-lg text-3xs uppercase tracking-wider transition-all disabled:opacity-50"
+                  >
+                    {isSearchingMap ? '...' : 'Search'}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleMapSearchSubmit}
-                  disabled={isSearchingMap}
-                  className="bg-rose-500 hover:bg-rose-600 text-white font-bold px-3 py-1.5 rounded-lg text-3xs uppercase tracking-wider transition-all disabled:opacity-50"
-                >
-                  {isSearchingMap ? '...' : 'Search'}
-                </button>
+
+                {/* Search Results Dropdown */}
+                {mapSearchResults.length > 0 && (
+                  <div className="bg-white border border-[#ebdcd0]/60 rounded-lg overflow-hidden max-h-48 overflow-y-auto divide-y divide-slate-100 shadow-lg">
+                    {mapSearchResults.map((result, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handleSelectMapSearchResult(result)}
+                        className="w-full text-left p-2 hover:bg-[#faf8f5] transition-colors text-4xs font-medium text-slate-700 block line-clamp-2 leading-relaxed"
+                      >
+                        📍 {result.display_name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Search Results Dropdown */}
-              {mapSearchResults.length > 0 && (
-                <div className="bg-white border border-[#ebdcd0]/60 rounded-lg overflow-hidden max-h-48 overflow-y-auto divide-y divide-slate-100 shadow-lg">
-                  {mapSearchResults.map((result, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => handleSelectMapSearchResult(result)}
-                      className="w-full text-left p-2 hover:bg-[#faf8f5] transition-colors text-4xs font-medium text-slate-700 block line-clamp-2 leading-relaxed"
-                    >
-                      📍 {result.display_name}
-                    </button>
-                  ))}
+              {isCreatingRequest && (
+                <div className="bg-rose-500 text-white border border-rose-400 px-4 py-2 rounded-lg shadow-md font-bold text-xs flex items-center gap-2 animate-pulse">
+                  <MapPin className="w-4 h-4 text-white animate-bounce shrink-0" />
+                  <span>Search location or click on map to lock coordinates</span>
                 </div>
               )}
             </div>
-
-            {isCreatingRequest && (
-              <div className="bg-rose-500 text-white border border-rose-400 px-4 py-2 rounded-lg shadow-md font-bold text-xs flex items-center gap-2 animate-pulse">
-                <MapPin className="w-4 h-4 text-white animate-bounce shrink-0" />
-                <span>Search location or click on map to lock coordinates</span>
-              </div>
-            )}
-          </div>
-        </div>
+          )}
       </section>
 
       {/* TOASTS */}

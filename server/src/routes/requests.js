@@ -1,69 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { HelpRequest } from '../models/HelpRequest.js'
 
-// In-memory array fallback (if MongoDB is disconnected)
-const inMemoryRequests = [
-  {
-    id: 'req-1',
-    requesterId: 'user-aarav',
-    requesterName: 'Aarav Kumar',
-    requesterPhone: '+91 98765 43210',
-    title: 'Need O+ blood donor',
-    description: 'Urgent need for O+ blood donation for surgery at City Hospital. Any verified donor, please reach out as soon as possible.',
-    category: 'medical',
-    urgency: 'critical',
-    status: 'open',
-    location: { lat: 26.1730, lng: 91.7580, label: 'City Hospital, Guwahati' },
-    reports: 0,
-    aiSummary: 'Critical need for O+ blood donation at City Hospital for an upcoming surgery.',
-    createdAt: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-    acceptedAt: null,
-    resolvedAt: null,
-    helperId: null,
-    helperName: null,
-    helperPhone: null
-  },
-  {
-    id: 'req-2',
-    requesterId: 'user-priya',
-    requesterName: 'Priya Sharma',
-    requesterPhone: '+91 98765 99999',
-    title: 'Bike puncture on GS Road',
-    description: 'My scooter got punctured near Bhangagarh flyover on GS Road. I do not have a spare wheel. Need help locating a nearby mechanic or tools.',
-    category: 'transport',
-    urgency: 'urgent',
-    status: 'open',
-    location: { lat: 26.1610, lng: 91.7670, label: 'Bhangagarh Flyover, GS Road' },
-    reports: 0,
-    aiSummary: 'Roadside transport help needed near Bhangagarh flyover due to a bike tire puncture.',
-    createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    acceptedAt: null,
-    resolvedAt: null,
-    helperId: null,
-    helperName: null,
-    helperPhone: null
-  },
-  {
-    id: 'req-3',
-    requesterId: 'user-kabir',
-    requesterName: 'Kabir Das',
-    requesterPhone: '+91 99988 87766',
-    title: 'Medicine pickup for senior',
-    description: 'Need someone to pick up insulin from Zoo Road Pharmacy and deliver it to Zoo Road Path. Requester is an elderly individual unable to step out.',
-    category: 'essentials',
-    urgency: 'normal',
-    status: 'open',
-    location: { lat: 26.1680, lng: 91.7820, label: 'Zoo Road Pharmacy, Zoo Road' },
-    reports: 0,
-    aiSummary: 'Pickup of insulin from Zoo Road Pharmacy and delivery to a senior resident nearby.',
-    createdAt: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    acceptedAt: null,
-    resolvedAt: null,
-    helperId: null,
-    helperName: null,
-    helperPhone: null
-  }
-]
+// In-memory array fallback (empty — no dummy data, only real user-created requests)
+const inMemoryRequests = []
 
 const allowedUrgencies = new Set(['normal', 'urgent', 'critical'])
 const allowedCategories = new Set(['medical', 'transport', 'essentials', 'other'])
@@ -96,6 +35,18 @@ function validateRequest(body) {
     errors.push('requesterPhone is required')
   }
   return errors
+}
+
+// Helper: get start of today in IST (UTC+5:30)
+function getStartOfTodayIST() {
+  const now = new Date()
+  // Convert to IST by adding 5h30m offset
+  const istOffset = 5.5 * 60 * 60 * 1000
+  const istNow = new Date(now.getTime() + istOffset)
+  // Get midnight IST in UTC
+  const istMidnight = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()))
+  // Convert back to UTC
+  return new Date(istMidnight.getTime() - istOffset)
 }
 
 // ----------------------------------------------------
@@ -182,29 +133,49 @@ Evaluate and return a structured JSON response matching these criteria:
   return { isSpam, category, urgency, aiSummary }
 }
 
-export function registerRequestRoutes(app, io, dbContext) {
-  let isSeeded = false
+// ----------------------------------------------------
+// CLEANUP SCHEDULER: Delete requests older than 5 days
+// Runs every hour after server starts
+// ----------------------------------------------------
+export function startCleanupScheduler(dbContext) {
+  const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000
+  const ONE_HOUR_MS = 60 * 60 * 1000
 
-  // Seeding MongoDB helper
-  async function seedMongoDB() {
-    if (isSeeded) return
-    try {
-      const count = await HelpRequest.countDocuments()
-      if (count === 0) {
-        console.log('MongoDB collection is empty. Seeding initial data...')
-        const seedItems = inMemoryRequests.map(r => {
-          const { id, ...rest } = r
-          return rest
-        })
-        await HelpRequest.insertMany(seedItems)
-        console.log('MongoDB successfully seeded.')
+  async function cleanup() {
+    const cutoff = new Date(Date.now() - FIVE_DAYS_MS)
+
+    if (dbContext.isConnected()) {
+      try {
+        const result = await HelpRequest.deleteMany({ createdAt: { $lt: cutoff } })
+        if (result.deletedCount > 0) {
+          console.log(`[Cleanup] Deleted ${result.deletedCount} request(s) older than 5 days.`)
+        }
+      } catch (err) {
+        console.error('[Cleanup] Failed to delete old requests:', err.message)
       }
-      isSeeded = true
-    } catch (err) {
-      console.error('Failed to seed MongoDB collection:', err.message)
+    } else {
+      // In-memory fallback cleanup
+      const before = inMemoryRequests.length
+      const cutoffTime = cutoff.getTime()
+      for (let i = inMemoryRequests.length - 1; i >= 0; i--) {
+        if (new Date(inMemoryRequests[i].createdAt).getTime() < cutoffTime) {
+          inMemoryRequests.splice(i, 1)
+        }
+      }
+      const removed = before - inMemoryRequests.length
+      if (removed > 0) {
+        console.log(`[Cleanup] Removed ${removed} in-memory request(s) older than 5 days.`)
+      }
     }
   }
 
+  // Run immediately on startup, then every hour
+  cleanup()
+  setInterval(cleanup, ONE_HOUR_MS)
+  console.log('[Cleanup] Scheduler started — will purge requests older than 5 days every hour.')
+}
+
+export function registerRequestRoutes(app, io, dbContext) {
   // Format MongoDB model structure to client ID interface
   function formatReq(doc) {
     if (!doc) return null
@@ -217,13 +188,14 @@ export function registerRequestRoutes(app, io, dbContext) {
     }
   }
 
-  // 1. GET ALL REQUESTS
+  // 1. GET ALL REQUESTS (today only)
   app.get('/api/v1/requests', async (_request, response) => {
     try {
+      const todayStart = getStartOfTodayIST()
+
       if (dbContext.isConnected()) {
-        await seedMongoDB()
-        // Query database
-        const dbDocs = await HelpRequest.find().sort({ createdAt: -1 })
+        // Query database — only today's requests
+        const dbDocs = await HelpRequest.find({ createdAt: { $gte: todayStart } }).sort({ createdAt: -1 })
         const formatted = dbDocs.map(formatReq)
         
         // Sorting: Active (critical -> urgent -> normal) first, resolved/cancelled last
@@ -241,8 +213,10 @@ export function registerRequestRoutes(app, io, dbContext) {
         })
         return response.json({ data: sorted })
       } else {
-        // In-memory fallback sorting
-        const sorted = [...inMemoryRequests].sort((a, b) => {
+        // In-memory fallback — filter to today only
+        const todayMs = todayStart.getTime()
+        const todayRequests = inMemoryRequests.filter(r => new Date(r.createdAt).getTime() >= todayMs)
+        const sorted = todayRequests.sort((a, b) => {
           const aActive = a.status !== 'resolved' && a.status !== 'cancelled' && a.status !== 'flagged'
           const bActive = b.status !== 'resolved' && b.status !== 'cancelled' && b.status !== 'flagged'
           if (aActive && !bActive) return -1
