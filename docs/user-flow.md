@@ -2,16 +2,17 @@
 
 ```mermaid
 flowchart TD
-  A[Open HelpNow] --> B{Need help or want to help?}
-  B -->|Need help| C[Enter request details]
-  C --> D[Confirm approximate location]
-  D --> E[Publish request]
-  E --> F[Nearby helpers see live alert]
-  F --> G[Helper accepts]
-  G --> H[Requester sees accepted status]
-  H --> I[Mark request resolved]
-  B -->|Want to help| J[Browse nearby active requests]
-  J --> G
+  A[Open HelpNow] --> B[Sign in or create account]
+  B --> C{Need help or want to help?}
+  C -->|Need help| D[Enter request details]
+  D --> E[Confirm approximate location]
+  E --> F[Publish request]
+  F --> G[Other members browse open requests]
+  G --> H[One member atomically accepts]
+  H --> I[Requester sees acceptance]
+  I --> J[Start assistance and mark complete]
+  C -->|Want to help| G
+  J --> K[Same account can create another request]
 ```
 
-The MVP uses a demo identity. The next milestone adds sign-in, contact sharing only after acceptance, and a feedback flow after resolution.
+Each member uses one account for requesting and helping. Exact location data is not shown publicly; the current app does not measure helper distance or availability. For immediate danger, contact local emergency services.

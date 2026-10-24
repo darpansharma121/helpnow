@@ -3,10 +3,9 @@ import cors from 'cors'
 import express from 'express'
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
-import mongoose from 'mongoose'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerRequestRoutes, startCleanupScheduler } from './routes/requests.js'
+import { registerRequestRoutes } from './routes/requests.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -22,42 +21,40 @@ const io = new Server(httpServer, {
   }
 })
 
-// Establish connection to MongoDB
-const mongoUri = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/helpnow'
-let isMongoConnected = false
-
-console.log('Connecting to MongoDB at:', mongoUri)
-mongoose.connect(mongoUri)
-  .then(() => {
-    isMongoConnected = true
-    console.log('MongoDB connected successfully.')
-    startCleanupScheduler(dbContext)
-  })
-  .catch((err) => {
-    console.error('MongoDB connection failed. Falling back to in-memory store. Error:', err.message)
-  })
-
-const dbContext = {
-  isConnected: () => isMongoConnected
-}
-
 app.use(cors({ origin: clientOrigin }))
 app.use(express.json({ limit: '1mb' }))
 
 // Register API Routes
-registerRequestRoutes(app, io, dbContext)
+registerRequestRoutes(app, io)
 
 app.get('/api/v1/health', (_request, response) => {
   response.json({
     status: 'ok',
     service: 'helpnow-api',
-    database: isMongoConnected ? 'mongodb' : 'in-memory-fallback'
+    database: process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? 'supabase' : 'not-configured'
+  })
+})
+
+app.use('/api', (request, response) => {
+  response.status(404).json({
+    error: `API route not found: ${request.method} ${request.path}`
+  })
+})
+
+app.use((error, request, response, next) => {
+  if (!request.path.startsWith('/api/')) return next(error)
+
+  const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 600
+    ? error.status
+    : 500
+  response.status(status).json({
+    error: status === 400 ? 'Invalid request body.' : 'The API could not complete the request.'
   })
 })
 
 io.on('connection', (socket) => socket.emit('server:ready', {
   message: 'Connected to HelpNow real-time updates.',
-  database: isMongoConnected ? 'mongodb' : 'in-memory-fallback'
+  database: process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? 'supabase' : 'not-configured'
 }))
 
 // Serve compiled static assets in production deployment setups

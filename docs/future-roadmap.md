@@ -2,8 +2,8 @@
 
 ## Immediately after the hackathon
 
-- MongoDB persistence and geospatial nearby search
-- Authentication, user profiles, and verified contact methods
+- Geospatial nearby search and explicit helper availability preferences
+- Verified contact methods (accounts are not currently identity-verified)
 - Leaflet map view and category/urgency filters
 - Image attachments and AI-assisted classification
 

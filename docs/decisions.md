@@ -12,9 +12,9 @@ Chosen for rapid responsive UI work without maintaining a large custom styleshee
 
 Express provides a small, familiar REST surface; Socket.IO enables real-time request updates and is simple to demonstrate on local devices.
 
-## MongoDB
+## Supabase Auth + PostgreSQL
 
-MongoDB is planned for flexible request documents and built-in geospatial indexing. The first scaffold uses an in-memory store so the demo starts without external setup.
+Supabase provides email/password authentication, PostgreSQL persistence, and Row Level Security. Each API request uses the caller's access token rather than a privileged service key. PostgreSQL functions serialize request claiming and authorize lifecycle transitions.
 
 ## OpenStreetMap + Leaflet
 

@@ -2,24 +2,19 @@
 
 ```mermaid
 flowchart LR
-  Browser[React + Vite client] -->|REST API| API[Express API]
-  Browser <-->|Socket.IO| Realtime[Socket.IO server]
-  API --> DB[(MongoDB)]
-  API --> AI[OpenAI API]
+  Browser[React + Vite client] -->|Supabase Auth session| Auth[Supabase Auth]
+  Browser -->|REST API + bearer token| API[Express API]
+  Browser <-->|Socket.IO + bearer token| Realtime[Socket.IO server]
+  API -->|User-scoped Supabase client| DB[(Supabase PostgreSQL + RLS)]
+  API --> AI[Optional Gemini API]
   Browser --> Map[OpenStreetMap via Leaflet]
   Realtime --- API
 ```
 
-The React client handles request creation and discovery. The Express API validates and persists changes, while Socket.IO broadcasts request events to connected nearby clients. MongoDB is chosen for flexible request documents and geospatial queries. The AI provider is optional and accessed only from the server.
+The React client owns Supabase email/password sign-up, sign-in, sign-out, and session restoration. Express validates Supabase access tokens and scopes each database client to the authenticated user's token; PostgreSQL Row Level Security applies to API and direct data access. Request assignment and lifecycle changes use authorization-checked PostgreSQL functions. Socket.IO verifies the same Supabase session and limits chat to participants. The optional AI provider key is read only on the server.
 
-## Initial modules
+## Security and configuration
 
-- `client`: presentation, maps, forms, API client, socket client
-- `server/src/routes`: HTTP endpoints
-- `server/src/services`: request and AI business logic
-- `server/src/socket`: real-time event registration
-- `server/src/models`: Mongoose schemas
+Client configuration uses `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`; server configuration uses `SUPABASE_URL` and `SUPABASE_ANON_KEY`. The publishable/anon key is intended for browser use and is not a privileged key. Never put Supabase secret or `service_role` keys in client environment variables. The server deliberately uses a caller-scoped client rather than a privileged database key. Public request responses round coordinates and replace labels with `Approximate area`; exact location labels are not selectable by authenticated clients.
 
-## Security baseline
-
-Secrets stay in local environment files. Server-side validation is mandatory even when the client validates inputs. Production deployment will restrict CORS origins, rate-limit mutation endpoints, and store only approximate public locations.
+Run the SQL migration in `supabase/migrations` before starting the application. Configure `GEMINI_API_KEY` only in the server environment if AI features are enabled.
