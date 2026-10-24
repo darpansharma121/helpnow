@@ -6,7 +6,6 @@ import {
   AlertCircle,
   MapPin,
   User,
-  Phone,
   Shield,
   Filter,
   CheckCircle,
@@ -25,24 +24,6 @@ import {
 } from 'lucide-react'
 import './styles.css'
 
-// Persona configurations for easy side-by-side demo testing (cleaned for production deployment)
-const PERSONAS = {
-  aarav: {
-    id: 'user-requester',
-    name: 'Requester',
-    phone: '+91 98765 43210',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80',
-    role: 'requester'
-  },
-  neha: {
-    id: 'user-helper',
-    name: 'Helper',
-    phone: '+91 87654 32109',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=100&q=80',
-    role: 'helper'
-  }
-}
-
 // Category styles and display names
 const CATEGORIES = {
   medical: { label: 'Medical Support', color: 'text-rose-600 bg-rose-50 border-rose-100', badge: 'bg-rose-500' },
@@ -55,21 +36,35 @@ const CATEGORIES = {
 const API_URL = import.meta.env.VITE_API_URL || (window.location.origin + '/api/v1')
 const SOCKET_URL = API_URL.replace('/api/v1', '')
 
+async function readJsonResponse(response) {
+  const body = await response.text()
+  if (!body.trim()) {
+    if (response.status === 204) return null
+    throw new Error(`The server returned an empty response (HTTP ${response.status}). Check that the HelpNow API is running and the client is using the correct API URL.`)
+  }
+
+  try {
+    return JSON.parse(body)
+  } catch {
+    throw new Error(`The server returned an invalid response (HTTP ${response.status}). Check that the client is connected to the HelpNow API.`)
+  }
+}
+
 function App() {
   const [requests, setRequests] = useState([])
-  const [currentPersonaKey, setCurrentPersonaKey] = useState(() => localStorage.getItem('helpnow_persona') || 'aarav')
-  const [clientUserId, setClientUserId] = useState(() => localStorage.getItem('helpnow_userId') || crypto.randomUUID())
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('helpnow_token') || '')
+  const [currentUser, setCurrentUser] = useState(null)
+  const [authMode, setAuthMode] = useState('register')
+  const [authIntent, setAuthIntent] = useState('')
+  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
+  const [authError, setAuthError] = useState('')
+  const [isAuthLoading, setIsAuthLoading] = useState(false)
+  const [isRestoringSession, setIsRestoringSession] = useState(Boolean(localStorage.getItem('helpnow_token')))
+  const [isLoadingRequests, setIsLoadingRequests] = useState(false)
+  const [requestLoadError, setRequestLoadError] = useState('')
+  const [requestReloadKey, setRequestReloadKey] = useState(0)
+  const [requestScope, setRequestScope] = useState('available')
   const [selectedRequestId, setSelectedRequestId] = useState(null)
-  
-  // Persona change listener
-  useEffect(() => {
-    localStorage.setItem('helpnow_persona', currentPersonaKey)
-  }, [currentPersonaKey])
-
-  // Persist clientUserId
-  useEffect(() => {
-    localStorage.setItem('helpnow_userId', clientUserId)
-  }, [clientUserId])
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('')
@@ -79,6 +74,8 @@ function App() {
 
   // Request creation state
   const [isCreatingRequest, setIsCreatingRequest] = useState(false)
+  const [isSubmittingRequest, setIsSubmittingRequest] = useState(false)
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false)
   const [newRequest, setNewRequest] = useState({
     title: '',
     description: '',
@@ -114,12 +111,131 @@ function App() {
   const markersRef = useRef({})
   const creationMarkerRef = useRef(null)
 
-  const activePersona = PERSONAS[currentPersonaKey]
-  const activePersonaRef = useRef(activePersona)
+  const activeUser = currentUser
+  const activeUserRef = useRef(activeUser)
 
   useEffect(() => {
-    activePersonaRef.current = activePersona
-  }, [activePersona])
+    activeUserRef.current = activeUser
+  }, [activeUser])
+
+  useEffect(() => {
+    if (!authToken) {
+      setCurrentUser(null)
+      return
+    }
+    let cancelled = false
+    fetch(`${API_URL}/auth/me`, { headers: { Authorization: `Bearer ${authToken}` } })
+      .then(async (response) => {
+        const result = await readJsonResponse(response)
+        if (!response.ok) throw new Error(result.error || 'Session expired.')
+        if (!cancelled) setCurrentUser(result.data.user)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        localStorage.removeItem('helpnow_token')
+        setAuthToken('')
+        setCurrentUser(null)
+        setAuthError(error.message)
+      })
+      .finally(() => {
+        if (!cancelled) setIsRestoringSession(false)
+      })
+    return () => { cancelled = true }
+  }, [authToken])
+
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault()
+    setIsAuthLoading(true)
+    setAuthError('')
+    try {
+      const response = await fetch(`${API_URL}/auth/${authMode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(authForm)
+      })
+      const result = await readJsonResponse(response)
+      if (!response.ok) throw new Error(result.error || 'Unable to sign in.')
+      localStorage.setItem('helpnow_token', result.data.token)
+      setCurrentUser(result.data.user)
+      setAuthToken(result.data.token)
+      setAuthForm({ name: '', email: '', password: '' })
+      setAuthError('')
+      if (authIntent === 'ask' || authIntent === 'voice') {
+        setRequestScope('created')
+        setIsCreatingRequest(true)
+      } else if (authIntent === 'offer') {
+        setRequestScope('available')
+        setIsCreatingRequest(false)
+      }
+    } catch (error) {
+      setAuthError(error.message || 'Unable to connect. Please try again.')
+    } finally {
+      setIsAuthLoading(false)
+    }
+  }
+
+  const handleSignOut = () => {
+    localStorage.removeItem('helpnow_token')
+    setAuthToken('')
+    setCurrentUser(null)
+    setRequests([])
+    setSelectedRequestId(null)
+    setIsCreatingRequest(false)
+  }
+
+  const handleVoiceDraft = () => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Recognition) {
+      setIsCreatingRequest(true)
+      addToast('Voice input unavailable', 'Your browser does not support speech recognition. You can still type your request.', 'info')
+      return
+    }
+
+    setIsCreatingRequest(true)
+    const recognition = new Recognition()
+    recognition.lang = navigator.language || 'en-IN'
+    recognition.interimResults = false
+    recognition.maxAlternatives = 1
+    recognition.onresult = (event) => {
+      const transcript = event.results?.[0]?.[0]?.transcript?.trim()
+      if (transcript) {
+        const description = [newRequest.description, transcript].filter(Boolean).join(' ')
+        setNewRequest((previous) => ({
+          ...previous,
+          description
+        }))
+        setIsAnalyzingAI(true)
+        fetch(`${API_URL}/requests/analyze-ai`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+          body: JSON.stringify({ title: newRequest.title, description })
+        })
+          .then(async (response) => {
+            const result = await readJsonResponse(response)
+            if (!response.ok) throw new Error(result.error || 'AI analysis failed.')
+            setAiSuggestions(result.data)
+            setNewRequest((previous) => ({
+              ...previous,
+              category: result.data.category,
+              urgency: result.data.urgency
+            }))
+            addToast('Voice draft ready', 'Review the transcript and AI suggestions, choose a location, and confirm before publishing.', 'success')
+          })
+          .catch((error) => {
+            console.error('Voice draft analysis failed:', error)
+            addToast('Voice draft ready', 'Review the transcript and complete the details before publishing. AI suggestions are unavailable.', 'warning')
+          })
+          .finally(() => setIsAnalyzingAI(false))
+      }
+    }
+    recognition.onerror = () => addToast('Voice input failed', 'Please try again or type your request instead.', 'warning')
+    try {
+      recognition.start()
+    } catch (error) {
+      console.error('Unable to start browser speech recognition:', error)
+      addToast('Voice input failed', 'Allow microphone access or type your request instead.', 'warning')
+    }
+  }
 
   // Add toast notification helper
   const addToast = (title, message, type = 'info') => {
@@ -130,10 +246,11 @@ function App() {
     }, 4500)
   }
 
-  // Socket.IO Integration (mount only, uses refs to avoid redundant re-connections on persona toggles)
+  // Socket.IO is authenticated with the same short-lived access token as the API.
   useEffect(() => {
+    if (!authToken || !currentUser) return undefined
     console.log('Connecting to Socket.IO at', SOCKET_URL)
-    const socket = io(SOCKET_URL)
+    const socket = io(SOCKET_URL, { auth: { token: authToken } })
     socketRef.current = socket
 
     socket.on('connect', () => {
@@ -163,7 +280,7 @@ function App() {
       })
       
       // Trigger toast notification if not self-created
-      if (newReq.requesterId !== activePersonaRef.current.id) {
+      if (newReq.requesterId !== activeUserRef.current?.id) {
         const catLabel = CATEGORIES[newReq.category]?.label || 'General'
         addToast(
           `Alert: New Help Request`,
@@ -209,17 +326,17 @@ function App() {
       socket.disconnect()
       socketRef.current = null
     }
-  }, [])
+  }, [authToken, currentUser])
 
   // Join/Leave Chat Rooms dynamically
   useEffect(() => {
     if (socketRef.current && selectedRequestId) {
-      socketRef.current.emit('chat:join', { requestId: selectedRequestId, userId: clientUserId })
+      socketRef.current.emit('chat:join', { requestId: selectedRequestId })
       return () => {
         socketRef.current.emit('chat:leave', { requestId: selectedRequestId })
       }
     }
-  }, [selectedRequestId, socketConnected])
+  }, [selectedRequestId, socketConnected, currentUser])
 
   // Reset tab to info when request changes
   useEffect(() => {
@@ -228,20 +345,29 @@ function App() {
 
   // Initial REST Fetch
   useEffect(() => {
+    if (!authToken || !currentUser) return
     const fetchRequests = async () => {
+      setIsLoadingRequests(true)
+      setRequestLoadError('')
       try {
-        const response = await fetch(`${API_URL}/requests`)
-        const json = await response.json()
+        const response = await fetch(`${API_URL}/requests`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        })
+        const json = await readJsonResponse(response)
+        if (!response.ok) throw new Error(json.error || 'Unable to load requests.')
         if (json.data) {
           setRequests(json.data)
         }
       } catch (err) {
         console.error('Failed to fetch requests:', err)
+        setRequestLoadError(err.message || 'Unable to load requests.')
         addToast('Error', 'Unable to load requests from server.', 'danger')
+      } finally {
+        setIsLoadingRequests(false)
       }
     }
     fetchRequests()
-  }, [])
+  }, [authToken, currentUser, requestReloadKey])
 
   // ----------------------------------------------------
   // LEAFLET MAP INLINE INITIALIZATION
@@ -288,7 +414,7 @@ function App() {
         
         // Fetch friendly label via OSM reverse search
         fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`)
-          .then(res => res.json())
+          .then(readJsonResponse)
           .then(data => {
             if (data && data.display_name) {
               setNewRequestLocation({
@@ -332,7 +458,7 @@ function App() {
 
       // Light theme styled markers
       let colorClass = 'bg-rose-500 shadow-rose-500/50 border-rose-200'
-      if (req.status === 'resolved' || req.status === 'cancelled') {
+      if (req.status === 'resolved' || req.status === 'cancelled' || req.status === 'unfulfilled') {
         colorClass = 'bg-slate-400 shadow-slate-400/20 border-slate-355 opacity-55'
       } else if (req.urgency === 'critical') {
         colorClass = 'bg-rose-500 shadow-rose-500/70 border-white animate-pulse'
@@ -405,7 +531,7 @@ function App() {
           })
           
           fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.lat}&lon=${pos.lng}&zoom=16`)
-            .then(res => res.json())
+            .then(readJsonResponse)
             .then(data => {
               if (data && data.display_name) {
                 setNewRequestLocation({
@@ -465,7 +591,7 @@ function App() {
         try {
           const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=16`)
           if (res.ok) {
-            const data = await res.json()
+            const data = await readJsonResponse(res)
             if (data && data.display_name) {
               setNewRequestLocation({
                 lat: latitude,
@@ -497,6 +623,16 @@ function App() {
   const filteredRequests = useMemo(() => {
     return requests.filter((req) => {
       if (req.status === 'flagged') return false
+      const isMine = req.requesterId === activeUser?.id
+      const isHelping = req.helperId === activeUser?.id
+      const inScope = requestScope === 'available'
+        ? !isMine && req.status === 'open'
+        : requestScope === 'created'
+          ? isMine
+          : requestScope === 'accepted'
+            ? isHelping && ['accepted', 'in_progress'].includes(req.status)
+            : (isMine || isHelping) && req.status === 'resolved'
+      if (!inScope) return false
 
       const matchSearch =
         req.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -504,15 +640,23 @@ function App() {
 
       const matchCategory = selectedCategory === 'all' || req.category === selectedCategory
       const matchUrgency = selectedUrgency === 'all' || req.urgency === selectedUrgency
-      const matchActive = !showActiveOnly || (req.status !== 'resolved' && req.status !== 'cancelled')
+      const matchActive = !showActiveOnly ||
+        !['resolved', 'cancelled', 'unfulfilled'].includes(req.status)
 
       return matchSearch && matchCategory && matchUrgency && matchActive
     })
-  }, [requests, searchQuery, selectedCategory, selectedUrgency, showActiveOnly])
+  }, [requests, searchQuery, selectedCategory, selectedUrgency, showActiveOnly, requestScope, activeUser?.id])
 
   const selectedRequest = useMemo(() => {
     return requests.find((r) => r.id === selectedRequestId)
   }, [requests, selectedRequestId])
+
+  const handleRequestScope = (scope) => {
+    setRequestScope(scope)
+    setShowActiveOnly(scope !== 'completed')
+    setSelectedRequestId(null)
+    setIsCreatingRequest(false)
+  }
 
   // ----------------------------------------------------
   // MUTATION HANDLERS
@@ -530,15 +674,15 @@ function App() {
     try {
       const response = await fetch(`${API_URL}/requests/analyze-ai`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({
           title: newRequest.title,
           description: newRequest.description
         })
       })
 
-      if (!response.ok) throw new Error('AI analysis call failed')
-      const json = await response.json()
+      const json = await readJsonResponse(response)
+      if (!response.ok) throw new Error(json?.error || 'AI analysis call failed')
       
       if (json.data) {
         const { category, urgency, aiSummary, isSpam } = json.data
@@ -566,7 +710,7 @@ function App() {
   // Create request
   const handleCreateRequestSubmit = async (e) => {
     e.preventDefault()
-
+    if (isSubmittingRequest) return
 
     if (!newRequest.description.trim() || newRequest.description.trim().length < 10) {
       addToast('Validation', 'Description must be at least 10 characters.', 'warning')
@@ -577,28 +721,22 @@ function App() {
       return
     }
 
+    setIsSubmittingRequest(true)
     try {
       const payload = {
         ...newRequest,
-        requesterId: activePersona.id,
-        requesterName: activePersona.name.split(' (')[0],
-        requesterPhone: activePersona.phone,
         location: newRequestLocation,
         aiSummary: aiSuggestions?.aiSummary || undefined
       }
 
       const response = await fetch(`${API_URL}/requests`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify(payload)
       })
 
-      if (!response.ok) {
-        const errJson = await response.json()
-        throw new Error(errJson.error || 'Failed to submit request')
-      }
-
-      const json = await response.json()
+      const json = await readJsonResponse(response)
+      if (!response.ok) throw new Error(json?.error || 'Failed to submit request')
       if (json.data) {
         addToast('Created', 'Help request published persistently to neighbors.', 'success')
         
@@ -618,31 +756,37 @@ function App() {
     } catch (err) {
       console.error(err)
       addToast('Error', err.message || 'Failed to submit request.', 'danger')
+    } finally {
+      setIsSubmittingRequest(false)
     }
   }
 
   // Update status lifecycle
   const handleUpdateStatus = async (statusVal) => {
-    if (!selectedRequestId) return
+    if (!selectedRequestId || isUpdatingStatus) return
     
+    setIsUpdatingStatus(true)
     try {
-      const payload = {
-        status: statusVal,
-        helperId: activePersona.role === 'helper' ? activePersona.id : undefined,
-        helperName: activePersona.role === 'helper' ? activePersona.name.split(' (')[0] : undefined,
-        helperPhone: activePersona.role === 'helper' ? activePersona.phone : undefined
+      const response = await fetch(
+        `${API_URL}/requests/${selectedRequestId}${statusVal === 'accepted' ? '/accept' : '/status'}`,
+        {
+          method: statusVal === 'accepted' ? 'POST' : 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+          body: statusVal === 'accepted' ? undefined : JSON.stringify({ status: statusVal })
+        }
+      )
+
+      const result = await readJsonResponse(response)
+      if (!response.ok) throw new Error(result?.error || 'Failed to update request status.')
+      if (result.data) {
+        setRequests((previous) => previous.map((item) => item.id === result.data.id ? result.data : item))
+        addToast('Request updated', `Status: ${result.data.status.replace('_', ' ')}.`, 'success')
       }
-
-      const response = await fetch(`${API_URL}/requests/${selectedRequestId}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-
-      if (!response.ok) throw new Error('Failed to update request status')
     } catch (err) {
       console.error(err)
-      addToast('Error', 'Failed to update request status.', 'danger')
+      addToast('Action unavailable', err.message || 'Failed to update request status.', 'danger')
+    } finally {
+      setIsUpdatingStatus(false)
     }
   }
 
@@ -652,11 +796,12 @@ function App() {
     
     try {
       const response = await fetch(`${API_URL}/requests/${selectedRequestId}/report`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` }
       })
 
-      if (!response.ok) throw new Error('Report failed')
-      const json = await response.json()
+      const json = await readJsonResponse(response)
+      if (!response.ok) throw new Error(json?.error || 'Report failed')
       
       if (json.data?.status === 'flagged') {
         addToast('Removed', 'This request has been hidden due to multiple report flags.', 'warning')
@@ -678,8 +823,8 @@ function App() {
       socketRef.current.emit('chat:send', {
         requestId: selectedRequest.id,
         text: chatText.trim(),
-        senderId: activePersona.id,
-        senderName: activePersona.name
+        senderId: activeUser.id,
+        senderName: activeUser.name
       })
       setChatText('')
     }
@@ -700,7 +845,7 @@ function App() {
     try {
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(mapSearchQuery.trim())}&limit=5`)
       if (res.ok) {
-        const data = await res.json()
+        const data = await readJsonResponse(res)
         setMapSearchResults(data)
         if (data.length === 0) {
           addToast('No Results', 'Could not find that location on the map.', 'warning')
@@ -749,7 +894,120 @@ function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[#faf8f5] text-slate-800 flex flex-col font-sans selection:bg-rose-100 selection:text-rose-700">
+    <main className="min-h-screen bg-[#FFF9F5] text-slate-800 flex flex-col font-sans selection:bg-rose-100 selection:text-rose-700">
+      {!currentUser ? (
+        <div className="flex min-h-screen items-center justify-center px-5 py-10">
+          <div className="w-full max-w-md rounded-3xl border border-rose-100 bg-white p-8 shadow-xl shadow-rose-900/5">
+            <a className="mb-6 inline-flex items-center gap-2 text-2xl font-black tracking-tight text-[#FF4F6D]" href="#top">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#FF4F6D] text-sm text-white">H</span>
+              Help<span className="text-[#24324B]">Now</span>
+            </a>
+            <h1 className="text-2xl font-black text-[#24324B]">
+              {isRestoringSession ? 'Restoring your account' : authMode === 'register' ? 'Join your community' : 'Welcome back'}
+            </h1>
+            <p className="mt-2 text-sm text-slate-600">Everyone can help. Everyone can need help. We’re here for each other.</p>
+            {!isRestoringSession && (
+              <div className="mt-5 grid gap-2">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-500">What would you like to do?</p>
+                {[
+                  ['ask', 'Ask for Help'],
+                  ['offer', 'Help Someone Nearby'],
+                  ['voice', 'Talk to HelpNow AI']
+                ].map(([intent, label]) => (
+                  <button
+                    key={intent}
+                    type="button"
+                    onClick={() => setAuthIntent(intent)}
+                    aria-pressed={authIntent === intent}
+                    className={`rounded-xl border px-4 py-2.5 text-left text-sm font-extrabold transition ${
+                      authIntent === intent
+                        ? 'border-[#FF4F6D] bg-[#FFE7EC] text-rose-700'
+                        : 'border-rose-100 bg-[#FFF9F5] text-[#24324B] hover:border-rose-300'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+                {authIntent && (
+                  <p className="text-xs text-slate-500">
+                    Sign in or create an account to continue. Voice input will be available in the request form.
+                  </p>
+                )}
+              </div>
+            )}
+            {isRestoringSession ? (
+              <p role="status" className="mt-8 text-sm font-semibold text-rose-600">Checking your session…</p>
+            ) : (
+              <form className="mt-7 space-y-4" onSubmit={handleAuthSubmit}>
+                {authMode === 'register' && (
+                  <label className="block text-sm font-bold text-slate-700">
+                    Your name
+                    <input
+                      required
+                      minLength={2}
+                      maxLength={80}
+                      autoComplete="name"
+                      value={authForm.name}
+                      onChange={(event) => setAuthForm({ ...authForm, name: event.target.value })}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-3 font-medium outline-none focus:border-[#FF4F6D] focus:ring-2 focus:ring-rose-100"
+                    />
+                  </label>
+                )}
+                <label className="block text-sm font-bold text-slate-700">
+                  Email
+                  <input
+                    required
+                    type="email"
+                    autoComplete="email"
+                    value={authForm.email}
+                    onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })}
+                    className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-3 font-medium outline-none focus:border-[#FF4F6D] focus:ring-2 focus:ring-rose-100"
+                  />
+                </label>
+                <label className="block text-sm font-bold text-slate-700">
+                  Password
+                  <input
+                    required
+                    type="password"
+                    minLength={authMode === 'register' ? 8 : undefined}
+                    maxLength={128}
+                    autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+                    value={authForm.password}
+                    onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
+                    className="mt-1.5 w-full rounded-xl border border-slate-200 px-3.5 py-3 font-medium outline-none focus:border-[#FF4F6D] focus:ring-2 focus:ring-rose-100"
+                  />
+                  {authMode === 'register' && <span className="mt-1 block text-xs font-normal text-slate-500">Use at least 8 characters.</span>}
+                </label>
+                {authError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</p>}
+                <button
+                  disabled={isAuthLoading}
+                  className="w-full rounded-xl bg-[#FF4F6D] px-4 py-3 font-extrabold text-white transition hover:bg-rose-600 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isAuthLoading ? 'Please wait…' : authMode === 'register' ? 'Create account' : 'Sign in'}
+                </button>
+              </form>
+            )}
+            {!isRestoringSession && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode(authMode === 'register' ? 'login' : 'register')
+                    setAuthError('')
+                  }}
+                  className="mt-4 w-full text-sm font-bold text-[#FF4F6D] hover:underline"
+                >
+                  {authMode === 'register' ? 'Already have an account? Sign in' : 'New to HelpNow? Create an account'}
+                </button>
+                <p className="mt-5 border-t border-slate-100 pt-4 text-xs leading-relaxed text-slate-500">
+                  HelpNow is a community network, not emergency dispatch. For immediate danger, contact your local emergency services.
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
       
       {/* ----------------------------------------------------
           NAVBAR: Warm Cream & Soft Red/Rose Accent
@@ -763,38 +1021,14 @@ function App() {
         </div>
 
 
-        {/* Identity Role Switcher */}
         <div className="flex items-center gap-3.5">
-          <div className="flex rounded-lg overflow-hidden bg-white shadow-xs p-0.5 border border-[#ede7e0]">
-            <button
-              onClick={() => {
-                setCurrentPersonaKey('aarav')
-                setIsCreatingRequest(false)
-                setSelectedRequestId(null)
-              }}
-              className={`text-2xs px-4 py-1.5 rounded-md font-bold transition-all duration-200 ${
-                currentPersonaKey === 'aarav'
-                  ? 'bg-rose-500 text-white shadow-xs'
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
-              }`}
-            >
-              Requester
-            </button>
-            <button
-              onClick={() => {
-                setCurrentPersonaKey('neha')
-                setIsCreatingRequest(false)
-                setSelectedRequestId(null)
-              }}
-              className={`text-2xs px-4 py-1.5 rounded-md font-bold transition-all duration-200 ${
-                currentPersonaKey === 'neha'
-                  ? 'bg-rose-500 text-white shadow-xs'
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
-              }`}
-            >
-              Helper
-            </button>
-          </div>
+          <span className="hidden sm:block text-xs font-semibold text-slate-600">{currentUser.name}</span>
+          <button
+            onClick={handleSignOut}
+            className="text-2xs px-3 py-1.5 rounded-md bg-white border border-[#ede7e0] text-slate-600 hover:bg-slate-50 font-bold"
+          >
+            Sign out
+          </button>
           {/* Map visibility toggle */}
           <button
             onClick={() => setMapVisible(v => !v)}
@@ -804,6 +1038,41 @@ function App() {
           </button>
         </div>
       </nav>
+
+      <section className="border-b border-rose-100 bg-[#FFF9F5] px-5 py-5 sm:px-8">
+        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-4 md:flex-row md:items-center">
+          <div>
+            <h1 className="text-lg font-black text-[#24324B] sm:text-xl">Everyone can help. Everyone can need help. We’re here for each other.</h1>
+            <p className="mt-1 text-sm text-slate-600">Helping today never means you cannot ask for help tomorrow.</p>
+            <p className="mt-1 text-xs text-slate-500">For immediate danger, contact your local emergency services. HelpNow is not emergency dispatch.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => { setIsCreatingRequest(true); setSelectedRequestId(null) }}
+              className="rounded-xl bg-[#FF4F6D] px-4 py-2.5 text-sm font-extrabold text-white shadow-sm hover:bg-rose-600"
+            >
+              Ask for Help
+            </button>
+            <button
+              onClick={() => { setIsCreatingRequest(false); setSelectedRequestId(null); setRequestScope('available') }}
+              className="rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-sm font-extrabold text-[#24324B] hover:bg-rose-50"
+            >
+              Help Someone Nearby
+            </button>
+            <button
+              onClick={handleVoiceDraft}
+              className="rounded-xl border border-rose-200 bg-[#FFE7EC] px-4 py-2.5 text-sm font-extrabold text-rose-700 hover:bg-rose-100"
+            >
+              Talk to HelpNow AI
+            </button>
+          </div>
+        </div>
+      </section>
+      {socketError && (
+        <div role="status" className="border-b border-amber-200 bg-amber-50 px-5 py-2 text-sm font-semibold text-amber-800 sm:px-8">
+          Live updates are offline. Refresh the request list after reconnecting; do not assume requests are current.
+        </div>
+      )}
 
       {/* ----------------------------------------------------
           MAIN SCREEN LAYOUT
@@ -841,6 +1110,7 @@ function App() {
                   <label className="block text-3xs font-extrabold uppercase tracking-widest text-slate-500 mb-1">Request Title (Optional)</label>
                   <input
                     type="text"
+                    maxLength={120}
                     placeholder="e.g. Need O+ blood donor (Optional)"
                     value={newRequest.title}
                     onChange={(e) => setNewRequest({ ...newRequest, title: e.target.value })}
@@ -849,10 +1119,17 @@ function App() {
                 </div>
 
                 <div>
-                  <label className="block text-3xs font-extrabold uppercase tracking-widest text-slate-500 mb-1">Full Description & Details</label>
+                  <div className="mb-1 flex items-center justify-between">
+                    <label className="block text-3xs font-extrabold uppercase tracking-widest text-slate-500">Full Description & Details</label>
+                    <button type="button" onClick={handleVoiceDraft} className="text-3xs font-bold text-rose-600 hover:underline">
+                      Dictate draft
+                    </button>
+                  </div>
+                  <p className="mb-1 text-[10px] text-slate-500">Browser speech recognition may process audio externally. Review the draft before publishing.</p>
                   <textarea
                     required
                     rows="3"
+                    maxLength={2000}
                     placeholder="Explain what is needed, timing details, and any guidelines..."
                     value={newRequest.description}
                     onChange={(e) => setNewRequest({ ...newRequest, description: e.target.value })}
@@ -950,9 +1227,10 @@ function App() {
                 <div className="pt-2">
                   <button
                     type="submit"
-                    className="w-full flex items-center justify-center gap-2 bg-rose-500 text-white font-bold py-2.5 rounded-lg hover:bg-rose-600 shadow-md shadow-rose-500/10 transition-all text-xs uppercase tracking-wider"
+                    disabled={isSubmittingRequest}
+                    className="w-full flex items-center justify-center gap-2 bg-rose-500 text-white font-bold py-2.5 rounded-lg hover:bg-rose-600 shadow-md shadow-rose-500/10 transition-all text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-60"
                   >
-                    Publish Help Request
+                    {isSubmittingRequest ? 'Publishing…' : 'Publish Help Request'}
                   </button>
                 </div>
               </form>
@@ -1014,7 +1292,7 @@ function App() {
 
               <div className="h-px bg-slate-100 my-4" />
               {(selectedRequest.status === 'accepted' || selectedRequest.status === 'in_progress' || selectedRequest.status === 'resolved') && 
-               (activePersona.id === selectedRequest.requesterId || activePersona.id === selectedRequest.helperId) && (
+               (activeUser.id === selectedRequest.requesterId || activeUser.id === selectedRequest.helperId) && (
                 <div className="flex border-b border-slate-100 mb-4 bg-slate-50/50 p-1 rounded-lg">
                   <button
                     onClick={() => setDetailTab('info')}
@@ -1044,15 +1322,15 @@ function App() {
                 </div>
               )}
 
-              {detailTab === 'info' || !(activePersona.id === selectedRequest.requesterId || activePersona.id === selectedRequest.helperId) ? (
+              {detailTab === 'info' || !(activeUser.id === selectedRequest.requesterId || activeUser.id === selectedRequest.helperId) ? (
                 <div className="space-y-4 flex-1 flex flex-col min-h-0 overflow-y-auto">
                   {/* Location details */}
                   <div className="bg-[#faf8f5] border border-[#e8ded5]/65 p-3 rounded-xl flex items-start gap-2.5 shadow-3xs">
                     <MapPin className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
                     <div className="text-3xs">
-                      <p className="font-extrabold text-slate-700">Geospatial Location Address</p>
-                      <p className="text-slate-505 mt-0.5 leading-relaxed">{selectedRequest.location?.label || 'Guwahati District'}</p>
-                      <p className="text-4xs text-slate-400 font-mono mt-0.5">Lat: {selectedRequest.location?.lat.toFixed(5)}, Lng: {selectedRequest.location?.lng.toFixed(5)}</p>
+                      <p className="font-extrabold text-slate-700">Approximate location</p>
+                      <p className="text-slate-505 mt-0.5 leading-relaxed">{selectedRequest.location?.label || 'Approximate area'}</p>
+                      <p className="text-4xs text-slate-400 mt-1">The exact address is not shared with other members.</p>
                     </div>
                   </div>
 
@@ -1108,23 +1386,16 @@ function App() {
                   <div className="bg-white border-b border-[#ebdcd0]/60 px-4 py-2.5 flex items-center justify-between shadow-3xs">
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-3xs font-extrabold text-slate-700">Chat with {activePersona.role === 'requester' ? 'Helper' : 'Requester'}</span>
+                      <span className="text-3xs font-extrabold text-slate-700">Chat with {activeUser.id === selectedRequest.requesterId ? 'Helper' : 'Requester'}</span>
                     </div>
                     
-                    <a
-                      href={`tel:${activePersona.role === 'requester' ? selectedRequest.helperPhone : selectedRequest.requesterPhone}`}
-                      className="flex items-center gap-1 bg-rose-50 border border-rose-150 hover:bg-rose-100 text-rose-600 px-2.5 py-1 rounded-lg text-4xs font-black uppercase tracking-wider transition-all"
-                    >
-                      <Phone className="w-3 h-3 text-rose-500" />
-                      Call {activePersona.role === 'requester' ? 'Helper' : 'Requester'}
-                    </a>
                   </div>
 
                   {/* Messages Area */}
                   <div className="flex-1 p-4 space-y-3 overflow-y-auto min-h-[300px] max-h-[400px] flex flex-col">
                     {selectedRequest.messages && selectedRequest.messages.length > 0 ? (
                       selectedRequest.messages.map((msg, index) => {
-                        const isSelf = msg.senderId === activePersona.id
+                        const isSelf = msg.senderId === activeUser.id
                         return (
                           <div
                             key={index}
@@ -1178,26 +1449,30 @@ function App() {
               )}
 
               {/* Status lifecycle actions */}
-              <div className="pt-4 mt-auto border-t border-slate-100">
-                {selectedRequest.status === 'open' && activePersona.role === 'helper' && (
+              <div className="pt-4 mt-auto border-t border-slate-100" aria-busy={isUpdatingStatus}>
+                {isUpdatingStatus && <p role="status" className="mb-2 text-center text-xs font-semibold text-slate-500">Updating request…</p>}
+                {selectedRequest.status === 'open' && selectedRequest.requesterId !== activeUser.id && (
                   <button
                     onClick={() => handleUpdateStatus('accepted')}
+                    disabled={isUpdatingStatus}
                     className="w-full bg-rose-500 hover:bg-rose-600 text-white font-bold py-2.5 rounded-lg transition-all text-xs uppercase tracking-wider shadow-sm shadow-rose-500/10"
                   >
                     Accept Request & Assist
                   </button>
                 )}
 
-                {selectedRequest.status === 'accepted' && activePersona.role === 'helper' && (
+                {selectedRequest.status === 'accepted' && selectedRequest.helperId === activeUser.id && (
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       onClick={() => handleUpdateStatus('open')}
+                      disabled={isUpdatingStatus}
                       className="border border-slate-200 text-slate-500 font-bold py-2.5 rounded-lg hover:bg-slate-50 transition-all text-xs"
                     >
                       Release / Cancel
                     </button>
                     <button
                       onClick={() => handleUpdateStatus('in_progress')}
+                      disabled={isUpdatingStatus}
                       className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-2.5 rounded-lg transition-all text-xs uppercase tracking-wider"
                     >
                       Start Journey
@@ -1205,23 +1480,35 @@ function App() {
                   </div>
                 )}
 
-                {selectedRequest.status === 'in_progress' && activePersona.role === 'helper' && (
-                  <button
-                    onClick={() => handleUpdateStatus('resolved')}
-                    className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-2.5 rounded-lg transition-all text-xs uppercase tracking-wider"
-                  >
-                    Mark as Resolved
-                  </button>
+                {selectedRequest.status === 'in_progress' && selectedRequest.helperId === activeUser.id && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => handleUpdateStatus('open')}
+                      disabled={isUpdatingStatus}
+                      className="border border-slate-200 text-slate-500 font-bold py-2.5 rounded-lg hover:bg-slate-50 transition-all text-xs"
+                    >
+                      I Can No Longer Help
+                    </button>
+                    <button
+                      onClick={() => handleUpdateStatus('resolved')}
+                      disabled={isUpdatingStatus}
+                      className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-2.5 rounded-lg transition-all text-xs uppercase tracking-wider"
+                    >
+                      Mark Complete
+                    </button>
+                  </div>
                 )}
 
                 {/* Cancel support for requester */}
-                {selectedRequest.requesterId === activePersona.id && 
+                {selectedRequest.requesterId === activeUser.id && 
                  selectedRequest.status !== 'resolved' && 
-                 selectedRequest.status !== 'cancelled' && (
+                 selectedRequest.status !== 'cancelled' &&
+                 selectedRequest.status !== 'unfulfilled' && (
                   <div className="space-y-2 mt-2">
                     {selectedRequest.status === 'in_progress' && (
                       <button
                         onClick={() => handleUpdateStatus('resolved')}
+                      disabled={isUpdatingStatus}
                         className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-2.5 rounded-lg transition-all text-xs uppercase tracking-wider"
                       >
                         Mark as Resolved
@@ -1229,16 +1516,28 @@ function App() {
                     )}
                     <button
                       onClick={() => handleUpdateStatus('cancelled')}
+                      disabled={isUpdatingStatus}
                       className="w-full border border-rose-100 bg-rose-50/50 hover:bg-rose-50 text-rose-600 font-bold py-2 rounded-lg transition-all text-3xs uppercase tracking-widest"
                     >
                       Cancel Help Request
                     </button>
+                    {selectedRequest.status === 'open' && (
+                      <button
+                        onClick={() => handleUpdateStatus('unfulfilled')}
+                        disabled={isUpdatingStatus}
+                        className="w-full border border-slate-200 bg-white py-2 text-3xs font-bold uppercase tracking-widest text-slate-500 hover:bg-slate-50"
+                      >
+                        Close: Unable to Find Help
+                      </button>
+                    )}
                   </div>
                 )}
 
-                {(selectedRequest.status === 'resolved' || selectedRequest.status === 'cancelled') && (
+                {['resolved', 'cancelled', 'unfulfilled'].includes(selectedRequest.status) && (
                   <div className="text-center py-2 bg-slate-50 border border-slate-150 rounded-lg">
-                    <p className="text-3xs text-slate-400 font-bold uppercase tracking-wider">This request is {selectedRequest.status}.</p>
+                    <p className="text-3xs text-slate-400 font-bold uppercase tracking-wider">
+                      {selectedRequest.status === 'unfulfilled' ? 'This request was closed because no help was found.' : `This request is ${selectedRequest.status}.`}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1255,20 +1554,39 @@ function App() {
                       {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
                     </p>
                   </div>
-                  {activePersona.role === 'requester' && (
-                    <button
-                      onClick={() => {
-                        setIsCreatingRequest(true)
-                        setSelectedRequestId(null)
-                      }}
-                      className="flex items-center gap-1 text-2xs font-extrabold text-rose-500 bg-rose-50 border border-rose-150 hover:bg-rose-100 px-3.5 py-1.5 rounded-lg transition-all shadow-3xs"
-                    >
-                      <Plus className="w-4.5 h-4.5 text-rose-500" />
-                      I Need Help
-                    </button>
-                  )}
+                  <button
+                    onClick={() => {
+                      setIsCreatingRequest(true)
+                      setSelectedRequestId(null)
+                    }}
+                    className="flex items-center gap-1 text-2xs font-extrabold text-rose-500 bg-rose-50 border border-rose-150 hover:bg-rose-100 px-3.5 py-1.5 rounded-lg transition-all shadow-3xs"
+                  >
+                    <Plus className="w-4.5 h-4.5 text-rose-500" />
+                    Ask for Help
+                  </button>
                 </div>
-                <p className="text-3xs text-slate-500 mt-1">Showing only today's community posts · auto-cleaned after 5 days</p>
+                <p className="text-3xs text-slate-500 mt-1">Sorted by urgency, then recency. Exact distance and helper availability are not collected.</p>
+                <div className="mt-3 grid grid-cols-2 gap-1.5">
+                  {[
+                    ['available', 'Available Requests'],
+                    ['created', 'Requests I Created'],
+                    ['accepted', 'Requests I Accepted'],
+                    ['completed', 'Completed Assistance']
+                  ].map(([scope, label]) => (
+                    <button
+                      key={scope}
+                      onClick={() => handleRequestScope(scope)}
+                      aria-pressed={requestScope === scope}
+                      className={`rounded-lg border px-2 py-2 text-left text-[11px] font-bold transition ${
+                        requestScope === scope
+                          ? 'border-rose-300 bg-rose-50 text-rose-700'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-rose-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Search & Filters */}
@@ -1355,7 +1673,20 @@ function App() {
 
               {/* List Feed */}
               <div className="flex-1 divide-y divide-[#f5efe9] overflow-y-auto bg-[#fffcf9]/30">
-                {filteredRequests.length > 0 ? (
+                {isLoadingRequests ? (
+                  <div role="status" className="p-8 text-center text-sm font-semibold text-slate-500">Loading community requests…</div>
+                ) : requestLoadError ? (
+                  <div role="alert" className="p-8 text-center">
+                    <p className="text-sm font-bold text-rose-700">Could not load requests</p>
+                    <p className="mt-1 text-xs text-slate-500">{requestLoadError}</p>
+                    <button
+                      onClick={() => setRequestReloadKey((value) => value + 1)}
+                      className="mt-3 rounded-lg bg-rose-500 px-4 py-2 text-xs font-bold text-white hover:bg-rose-600"
+                    >
+                      Try again
+                    </button>
+                  </div>
+                ) : filteredRequests.length > 0 ? (
                   filteredRequests.map((request) => {
                     const isSelected = request.id === selectedRequestId
                     const categoryInfo = CATEGORIES[request.category]
@@ -1413,8 +1744,14 @@ function App() {
                 ) : (
                   <div className="p-8 text-center text-slate-450 py-16">
                     <Info className="w-7 h-7 mx-auto text-slate-350 mb-2.5" />
-                    <p className="text-xs font-bold text-slate-500">No requests found</p>
-                    <p className="text-3xs text-slate-400 mt-1">Try adjusting your filters or search keywords</p>
+                    <p className="text-xs font-bold text-slate-500">
+                      {requestScope === 'available' ? 'No open requests right now' :
+                        requestScope === 'created' ? 'You have not created a request yet' :
+                          requestScope === 'accepted' ? 'You have not accepted a request' : 'No completed assistance yet'}
+                    </p>
+                    <p className="text-3xs text-slate-400 mt-1">
+                      {requestScope === 'available' ? 'Check back later or post a request if you need help.' : 'Switch sections at any time to ask for or offer community help.'}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1494,6 +1831,8 @@ function App() {
             </div>
           )}
       </section>
+        </>
+      )}
 
       {/* TOASTS */}
       <div className="fixed bottom-6 right-6 space-y-2.5 z-55 max-w-sm w-full">

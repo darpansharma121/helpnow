@@ -1,9 +1,17 @@
 @import "tailwindcss";
 
+@theme {
+  --color-rose-500: #FF4F6D;
+  --color-rose-600: #E84361;
+  --color-rose-100: #FFE7EC;
+  --color-rose-50: #FFF3F5;
+  --color-slate-800: #24324B;
+}
+
 :root {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: #1e293b;
-  background: #faf8f5; /* Creamy off-white base */
+  color: #24324b;
+  background: #fff9f5;
 }
 
 html {
@@ -13,8 +21,8 @@ html {
 body {
   margin: 0;
   min-width: 320px;
-  background-color: #faf8f5;
-  color: #1e293b;
+  background-color: #FFF9F5;
+  color: #24324b;
 }
 
 button {
@@ -45,7 +53,7 @@ button {
 }
 
 ::-webkit-scrollbar-track {
-  background: #faf8f5;
+  background: #FFF9F5;
 }
 
 ::-webkit-scrollbar-thumb {
