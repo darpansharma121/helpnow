@@ -38,7 +38,7 @@ helpnow/
 
 ## Getting started
 
-Prerequisites: Node.js 20+ and npm 10+, plus a Supabase project.
+Prerequisites: Node.js 22.12+ and npm 10+, plus a Supabase project.
 
 ### Supabase dashboard setup
 
@@ -72,6 +72,17 @@ The Vite development server proxies API and Socket.IO traffic to port 3002 (chos
 The client uses Supabase Auth sessions for sign-up, sign-in, sign-out, and session restoration. The Express API verifies Supabase access tokens and uses the caller's token for database access so RLS remains enforced. Do not configure or expose a Supabase secret/service-role key in the client. Request assignment is performed by the `claim_help_request` PostgreSQL function, which locks the request row and prevents self-claiming or concurrent double assignment.
 
 New users can register in the client; create a second account in another browser or private window to test reciprocal help. The request map and API responses show approximate rather than precise coordinates. Requests are sorted by urgency and recency; helper distance and availability preferences are not currently collected.
+
+## Deploy to Render
+
+This repository includes a `render.yaml` Blueprint for one Node web service serving the built Vite client and Express API. In Render, create a new Blueprint from the repository and provide the same Supabase project URL and publishable/anon key for the server and client variables when prompted:
+
+- `SUPABASE_URL` and `SUPABASE_ANON_KEY` are used by the Express API at runtime.
+- `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are used by Vite during the build. The anon/publishable key is public by design; never use a Supabase secret or `service_role` key in a `VITE_` variable.
+
+The Blueprint uses build command `npm ci --prefix client && npm ci --prefix server && npm run build` and start command `npm start`. The build writes `client/dist`; Express serves those assets and falls back to `index.html` for browser navigation while preserving `/api/*` and `/socket.io/*` handling. The client uses same-origin API and Socket.IO URLs in production, so do not set `VITE_API_URL` for this single-service deployment. Render supplies `PORT`; no fixed production port or `CLIENT_ORIGIN` is required.
+
+After the first deploy, copy the service's Render URL into **Supabase → Authentication → URL Configuration** as the Site URL and an allowed redirect URL. Then open the Render service and check `/api/v1/health`, load the homepage, sign in, and test request creation and acceptance with two accounts. Optional AI classification remains disabled unless `GEMINI_API_KEY` is added as a server-only Render environment variable.
 
 For an immediate or life-threatening emergency, contact local emergency services. HelpNow is not emergency dispatch.
 

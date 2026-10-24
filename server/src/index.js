@@ -17,16 +17,18 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
 const app = express()
 const httpServer = createServer(app)
 
-// Support dynamic deployments by allowing flexible origin socket setups
-const clientOrigin = process.env.CLIENT_ORIGIN ?? '*'
+// Production serves the client and API from one origin; local dev may set CLIENT_ORIGIN.
+const clientOrigin = process.env.CLIENT_ORIGIN
 const io = new Server(httpServer, {
-  cors: {
-    origin: clientOrigin,
-    methods: ['GET', 'POST', 'PATCH']
-  }
+  ...(clientOrigin ? {
+    cors: {
+      origin: clientOrigin,
+      methods: ['GET', 'POST', 'PATCH']
+    }
+  } : {})
 })
 
-app.use(cors({ origin: clientOrigin }))
+if (clientOrigin) app.use(cors({ origin: clientOrigin }))
 app.use(express.json({ limit: '1mb' }))
 
 // Register API Routes
@@ -71,9 +73,12 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/') || req.path.startsWith('/socket.io/')) {
     return next()
   }
+  if (req.method !== 'GET' || !req.get('accept')?.includes('text/html')) return next()
+
   res.sendFile(path.join(distPath, 'index.html'), (err) => {
-    if (err) {
-      res.status(200).send('HelpNow API Server is running. Compile client assets (npm run build) to view the client UI.')
+    if (err && !res.headersSent) {
+      console.error('Unable to serve the HelpNow client build:', err.message)
+      res.status(503).type('text/plain').send('HelpNow frontend build is unavailable. Build client/dist before starting the production server.')
     }
   })
 })

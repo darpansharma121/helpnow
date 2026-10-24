@@ -1,5 +1,29 @@
 import { createClient } from '@supabase/supabase-js'
 
+const maxAuthAttempts = 3
+
+function isUserLookup(input) {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url
+  return typeof url === 'string' && url.includes('/auth/v1/user')
+}
+
+async function fetchWithAuthRetry(input, init) {
+  if (!isUserLookup(input)) return globalThis.fetch(input, init)
+
+  for (let attempt = 1; attempt <= maxAuthAttempts; attempt += 1) {
+    let response
+    try {
+      response = await globalThis.fetch(input, init)
+    } catch (error) {
+      if (init?.signal?.aborted || attempt === maxAuthAttempts) throw error
+    }
+
+    if (response && response.status !== 429 && response.status < 500) return response
+    if (attempt === maxAuthAttempts) return response
+    await new Promise((resolve) => setTimeout(resolve, attempt * 300))
+  }
+}
+
 export function createUserSupabaseClient(accessToken) {
   const url = process.env.SUPABASE_URL
   const anonKey = process.env.SUPABASE_ANON_KEY
@@ -17,7 +41,8 @@ export function createUserSupabaseClient(accessToken) {
       persistSession: false
     },
     global: {
-      headers: { Authorization: `Bearer ${accessToken}` }
+      headers: { Authorization: `Bearer ${accessToken}` },
+      fetch: fetchWithAuthRetry
     }
   })
 }

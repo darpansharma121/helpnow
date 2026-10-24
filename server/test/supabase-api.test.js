@@ -86,3 +86,35 @@ test('Supabase rejects invalid JWTs as unauthenticated instead of reporting an a
     else process.env.SUPABASE_ANON_KEY = originalKey
   }
 })
+
+test('Supabase Auth token lookup retries transient network failures', async () => {
+  const originalUrl = process.env.SUPABASE_URL
+  const originalKey = process.env.SUPABASE_ANON_KEY
+  const originalFetch = globalThis.fetch
+  let attempts = 0
+  process.env.SUPABASE_URL = 'https://project.supabase.co'
+  process.env.SUPABASE_ANON_KEY = 'test-anon-key'
+  globalThis.fetch = async () => {
+    attempts += 1
+    if (attempts < 3) throw new TypeError('Temporary network failure')
+    return new Response(JSON.stringify({
+      code: 'bad_jwt',
+      message: 'invalid JWT',
+      statusCode: 401
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  }
+
+  try {
+    assert.equal(await authenticateSupabaseToken('invalid-test-token'), null)
+    assert.equal(attempts, 3)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalUrl === undefined) delete process.env.SUPABASE_URL
+    else process.env.SUPABASE_URL = originalUrl
+    if (originalKey === undefined) delete process.env.SUPABASE_ANON_KEY
+    else process.env.SUPABASE_ANON_KEY = originalKey
+  }
+})
