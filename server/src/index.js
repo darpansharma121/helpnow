@@ -73,5 +73,5 @@ app.use((req, res, next) => {
   })
 })
 
-const port = Number(process.env.PORT ?? 3000)
+const port = Number(process.env.PORT ?? 3002)
 httpServer.listen(port, () => console.log(`HelpNow API listening on http://localhost:${port}`))

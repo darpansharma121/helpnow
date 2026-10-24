@@ -1,6 +1,6 @@
 create extension if not exists pgcrypto;
 
-create table public.profiles (
+create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   display_name text not null check (char_length(display_name) between 2 and 80),
   email text not null,
@@ -8,7 +8,30 @@ create table public.profiles (
   updated_at timestamptz not null default now()
 );
 
-create table public.helper_preferences (
+alter table public.profiles
+  add column if not exists display_name text,
+  add column if not exists email text,
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+update public.profiles p
+set
+  display_name = case
+    when char_length(coalesce(nullif(trim(p.display_name), ''), nullif(trim((select u.raw_user_meta_data ->> 'name' from auth.users u where u.id = p.id)), ''), split_part(coalesce((select u.email from auth.users u where u.id = p.id), ''), '@', 1), 'Community member')) between 2 and 80
+      then coalesce(nullif(trim(p.display_name), ''), nullif(trim((select u.raw_user_meta_data ->> 'name' from auth.users u where u.id = p.id)), ''), split_part(coalesce((select u.email from auth.users u where u.id = p.id), ''), '@', 1), 'Community member')
+    else 'Community member'
+  end,
+  email = coalesce(nullif(p.email, ''), (select u.email from auth.users u where u.id = p.id), '')
+where p.display_name is null
+   or char_length(trim(p.display_name)) not between 2 and 80
+   or p.email is null
+   or p.email = '';
+
+alter table public.profiles
+  alter column display_name set not null,
+  alter column email set not null;
+
+create table if not exists public.helper_preferences (
   user_id uuid primary key references public.profiles (id) on delete cascade,
   skills text[] not null default '{}',
   service_radius_km integer check (service_radius_km is null or service_radius_km between 1 and 500),
@@ -18,7 +41,7 @@ create table public.helper_preferences (
   updated_at timestamptz not null default now()
 );
 
-create table public.help_requests (
+create table if not exists public.help_requests (
   id uuid primary key default gen_random_uuid(),
   requester_id uuid not null references public.profiles (id) on delete cascade,
   requester_name text not null,
@@ -39,7 +62,7 @@ create table public.help_requests (
   updated_at timestamptz not null default now()
 );
 
-create table public.help_assignments (
+create table if not exists public.help_assignments (
   request_id uuid primary key references public.help_requests (id) on delete cascade,
   requester_id uuid not null references public.profiles (id) on delete cascade,
   helper_id uuid not null references public.profiles (id) on delete cascade,
@@ -50,7 +73,7 @@ create table public.help_assignments (
   check (requester_id <> helper_id)
 );
 
-create table public.help_messages (
+create table if not exists public.help_messages (
   id uuid primary key default gen_random_uuid(),
   request_id uuid not null references public.help_requests (id) on delete cascade,
   sender_id uuid not null references public.profiles (id) on delete cascade,
@@ -59,19 +82,19 @@ create table public.help_messages (
   created_at timestamptz not null default now()
 );
 
-create table public.help_request_reports (
+create table if not exists public.help_request_reports (
   request_id uuid not null references public.help_requests (id) on delete cascade,
   reporter_id uuid not null references public.profiles (id) on delete cascade,
   created_at timestamptz not null default now(),
   primary key (request_id, reporter_id)
 );
 
-create index help_requests_status_created_idx on public.help_requests (status, created_at desc);
-create index help_requests_requester_created_idx on public.help_requests (requester_id, created_at desc);
-create index help_requests_category_status_idx on public.help_requests (category, status);
-create index help_requests_location_idx on public.help_requests (latitude, longitude);
-create index help_assignments_helper_idx on public.help_assignments (helper_id, accepted_at desc);
-create index help_messages_request_created_idx on public.help_messages (request_id, created_at);
+create index if not exists help_requests_status_created_idx on public.help_requests (status, created_at desc);
+create index if not exists help_requests_requester_created_idx on public.help_requests (requester_id, created_at desc);
+create index if not exists help_requests_category_status_idx on public.help_requests (category, status);
+create index if not exists help_requests_location_idx on public.help_requests (latitude, longitude);
+create index if not exists help_assignments_helper_idx on public.help_assignments (helper_id, accepted_at desc);
+create index if not exists help_messages_request_created_idx on public.help_messages (request_id, created_at);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -84,14 +107,17 @@ begin
 end;
 $$;
 
+drop trigger if exists profiles_set_updated_at on public.profiles;
 create trigger profiles_set_updated_at
 before update on public.profiles
 for each row execute function public.set_updated_at();
 
+drop trigger if exists helper_preferences_set_updated_at on public.helper_preferences;
 create trigger helper_preferences_set_updated_at
 before update on public.helper_preferences
 for each row execute function public.set_updated_at();
 
+drop trigger if exists help_requests_set_updated_at on public.help_requests;
 create trigger help_requests_set_updated_at
 before update on public.help_requests
 for each row execute function public.set_updated_at();
@@ -115,6 +141,7 @@ begin
 end;
 $$;
 
+drop trigger if exists help_requests_prepare_insert on public.help_requests;
 create trigger help_requests_prepare_insert
 before insert on public.help_requests
 for each row execute function public.prepare_help_request();
@@ -136,6 +163,7 @@ begin
 end;
 $$;
 
+drop trigger if exists help_messages_prepare_insert on public.help_messages;
 create trigger help_messages_prepare_insert
 before insert on public.help_messages
 for each row execute function public.prepare_help_message();
@@ -178,6 +206,7 @@ insert into public.helper_preferences (user_id)
 select p.id from public.profiles p
 on conflict (user_id) do nothing;
 
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_auth_user();
@@ -190,28 +219,34 @@ alter table public.help_messages enable row level security;
 alter table public.help_request_reports enable row level security;
 grant usage on schema public to authenticated;
 
+drop policy if exists "Users can read their own profile" on public.profiles;
 create policy "Users can read their own profile"
 on public.profiles for select to authenticated
 using (id = (select auth.uid()));
 
+drop policy if exists "Users can update their own profile" on public.profiles;
 create policy "Users can update their own profile"
 on public.profiles for update to authenticated
 using (id = (select auth.uid()))
 with check (id = (select auth.uid()));
 
+drop policy if exists "Users can read their helper preferences" on public.helper_preferences;
 create policy "Users can read their helper preferences"
 on public.helper_preferences for select to authenticated
 using (user_id = (select auth.uid()));
 
+drop policy if exists "Users can create their helper preferences" on public.helper_preferences;
 create policy "Users can create their helper preferences"
 on public.helper_preferences for insert to authenticated
 with check (user_id = (select auth.uid()));
 
+drop policy if exists "Users can update their helper preferences" on public.helper_preferences;
 create policy "Users can update their helper preferences"
 on public.helper_preferences for update to authenticated
 using (user_id = (select auth.uid()))
 with check (user_id = (select auth.uid()));
 
+drop policy if exists "Users can read discoverable and participating requests" on public.help_requests;
 create policy "Users can read discoverable and participating requests"
 on public.help_requests for select to authenticated
 using (
@@ -223,6 +258,7 @@ using (
   )
 );
 
+drop policy if exists "Users can create their own open requests" on public.help_requests;
 create policy "Users can create their own open requests"
 on public.help_requests for insert to authenticated
 with check (
@@ -230,6 +266,7 @@ with check (
   and status in ('open', 'flagged')
 );
 
+drop policy if exists "Participants can view assignments" on public.help_assignments;
 create policy "Participants can view assignments"
 on public.help_assignments for select to authenticated
 using (
@@ -237,6 +274,7 @@ using (
   or helper_id = (select auth.uid())
 );
 
+drop policy if exists "Participants can read request messages" on public.help_messages;
 create policy "Participants can read request messages"
 on public.help_messages for select to authenticated
 using (
@@ -253,6 +291,7 @@ using (
   )
 );
 
+drop policy if exists "Participants can send request messages" on public.help_messages;
 create policy "Participants can send request messages"
 on public.help_messages for insert to authenticated
 with check (

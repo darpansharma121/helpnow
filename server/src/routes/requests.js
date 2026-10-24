@@ -168,6 +168,12 @@ async function loadMessages(client, rows, userId) {
 
 function errorResponse(response, error, fallback) {
   const message = error?.message || fallback
+  const code = error?.code || ''
+  if (code === 'PGRST205' || code === 'PGRST202' || code === '42P01' || /schema cache|could not find the table|could not find the function/i.test(message)) {
+    return response.status(503).json({
+      error: 'HelpNow database schema is not installed or is out of date. Run the SQL migration in supabase/migrations, then retry.'
+    })
+  }
   if (/cannot accept your own|not allowed|cannot report your own|paused for your account/i.test(message)) {
     return response.status(403).json({ error: message })
   }
@@ -191,7 +197,9 @@ export function registerRequestRoutes(app, io) {
       return session
     } catch (error) {
       console.error('Request authentication lookup failed:', error)
-      response.status(503).json({ error: 'Account service is temporarily unavailable.' })
+      response.status(503).json({
+        error: 'Supabase authentication is temporarily unavailable. Verify SUPABASE_URL and SUPABASE_ANON_KEY in server/.env, then restart the API.'
+      })
       return null
     }
   }

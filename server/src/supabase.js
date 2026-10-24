@@ -27,19 +27,12 @@ export async function authenticateSupabaseToken(accessToken) {
   const { data, error } = await client.auth.getUser(accessToken)
   if (error || !data.user) return null
 
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .select('id, display_name, email')
-    .eq('id', data.user.id)
-    .maybeSingle()
-  if (profileError) throw profileError
-
   return {
     client,
     user: {
       id: data.user.id,
       email: data.user.email,
-      name: profile?.display_name || data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'Community member'
+      name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'Community member'
     }
   }
 }
