@@ -1,5 +1,5 @@
-import 'dotenv/config'
 import cors from 'cors'
+import dotenv from 'dotenv'
 import express from 'express'
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url'
 import { registerRequestRoutes } from './routes/requests.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
+
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+  console.error('Supabase is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY in server/.env.')
+}
 
 const app = express()
 const httpServer = createServer(app)

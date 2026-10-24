@@ -25,7 +25,11 @@ export function createUserSupabaseClient(accessToken) {
 export async function authenticateSupabaseToken(accessToken) {
   const client = createUserSupabaseClient(accessToken)
   const { data, error } = await client.auth.getUser(accessToken)
-  if (error || !data.user) return null
+  if (error) {
+    if (error.status === 401 || error.status === 403) return null
+    throw error
+  }
+  if (!data.user) return null
 
   return {
     client,

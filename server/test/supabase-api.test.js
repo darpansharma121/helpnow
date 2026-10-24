@@ -2,6 +2,7 @@ import test, { before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
 import { registerRequestRoutes, validateRequest } from '../src/routes/requests.js'
+import { authenticateSupabaseToken } from '../src/supabase.js'
 
 const app = express()
 const io = {
@@ -58,4 +59,30 @@ test('request server validation rejects invalid values and accepts a valid draft
     urgency: 'normal',
     location: { lat: 26.14, lng: 91.74, label: 'Approximate area' }
   }), [])
+})
+
+test('Supabase rejects invalid JWTs as unauthenticated instead of reporting an auth outage', async () => {
+  const originalUrl = process.env.SUPABASE_URL
+  const originalKey = process.env.SUPABASE_ANON_KEY
+  const originalFetch = globalThis.fetch
+  process.env.SUPABASE_URL = 'https://project.supabase.co'
+  process.env.SUPABASE_ANON_KEY = 'test-anon-key'
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    code: 'bad_jwt',
+    message: 'invalid JWT',
+    statusCode: 403
+  }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' }
+  })
+
+  try {
+    assert.equal(await authenticateSupabaseToken('invalid-test-token'), null)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalUrl === undefined) delete process.env.SUPABASE_URL
+    else process.env.SUPABASE_URL = originalUrl
+    if (originalKey === undefined) delete process.env.SUPABASE_ANON_KEY
+    else process.env.SUPABASE_ANON_KEY = originalKey
+  }
 })

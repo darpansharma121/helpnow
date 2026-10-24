@@ -196,9 +196,14 @@ export function registerRequestRoutes(app, io) {
       if (!session) response.status(401).json({ error: 'Your session has expired. Sign in again.' })
       return session
     } catch (error) {
-      console.error('Request authentication lookup failed:', error)
+      console.error('Request authentication lookup failed:', {
+        name: error?.name,
+        message: error?.message,
+        code: error?.code,
+        status: error?.status
+      })
       response.status(503).json({
-        error: 'Supabase authentication is temporarily unavailable. Verify SUPABASE_URL and SUPABASE_ANON_KEY in server/.env, then restart the API.'
+        error: 'Cannot reach Supabase Auth. Check SUPABASE_URL and SUPABASE_ANON_KEY in server/.env, confirm the project is active and internet access is available, then restart the API.'
       })
       return null
     }
