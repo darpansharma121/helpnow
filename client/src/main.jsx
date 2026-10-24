@@ -1,6 +1,7 @@
 import { StrictMode, useState, useEffect, useRef, useMemo } from 'react'
 import { createRoot } from 'react-dom/client'
 import { io } from 'socket.io-client'
+import { supabase } from './supabase'
 import L from 'leaflet'
 import {
   AlertCircle,
@@ -52,14 +53,14 @@ async function readJsonResponse(response) {
 
 function App() {
   const [requests, setRequests] = useState([])
-  const [authToken, setAuthToken] = useState(() => localStorage.getItem('helpnow_token') || '')
+  const [authToken, setAuthToken] = useState('')
   const [currentUser, setCurrentUser] = useState(null)
   const [authMode, setAuthMode] = useState('register')
   const [authIntent, setAuthIntent] = useState('')
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
   const [authError, setAuthError] = useState('')
   const [isAuthLoading, setIsAuthLoading] = useState(false)
-  const [isRestoringSession, setIsRestoringSession] = useState(Boolean(localStorage.getItem('helpnow_token')))
+  const [isRestoringSession, setIsRestoringSession] = useState(true)
   const [isLoadingRequests, setIsLoadingRequests] = useState(false)
   const [requestLoadError, setRequestLoadError] = useState('')
   const [requestReloadKey, setRequestReloadKey] = useState(0)
@@ -99,7 +100,6 @@ function App() {
   const [toasts, setToasts] = useState([])
   const [socketConnected, setSocketConnected] = useState(false)
   const [socketError, setSocketError] = useState(null)
-  const [serverDbType, setServerDbType] = useState('in-memory-fallback')
   const [detailTab, setDetailTab] = useState('info')
   const [chatText, setChatText] = useState('')
   const chatEndRef = useRef(null)
@@ -119,47 +119,63 @@ function App() {
   }, [activeUser])
 
   useEffect(() => {
-    if (!authToken) {
-      setCurrentUser(null)
-      return
+    if (!supabase) {
+      setAuthError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in client/.env.')
+      setIsRestoringSession(false)
+      return undefined
     }
-    let cancelled = false
-    fetch(`${API_URL}/auth/me`, { headers: { Authorization: `Bearer ${authToken}` } })
-      .then(async (response) => {
-        const result = await readJsonResponse(response)
-        if (!response.ok) throw new Error(result.error || 'Session expired.')
-        if (!cancelled) setCurrentUser(result.data.user)
-      })
-      .catch((error) => {
-        if (cancelled) return
-        localStorage.removeItem('helpnow_token')
-        setAuthToken('')
-        setCurrentUser(null)
-        setAuthError(error.message)
-      })
-      .finally(() => {
-        if (!cancelled) setIsRestoringSession(false)
-      })
-    return () => { cancelled = true }
-  }, [authToken])
+
+    let mounted = true
+    const applySession = (session) => {
+      const user = session?.user
+      setAuthToken(session?.access_token || '')
+      setCurrentUser(user ? {
+        id: user.id,
+        email: user.email,
+        name: user.user_metadata?.name || user.email?.split('@')[0] || 'Community member'
+      } : null)
+      setIsRestoringSession(false)
+    }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted) applySession(session)
+    })
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return
+      if (error) setAuthError(`Unable to restore your session: ${error.message}`)
+      applySession(data.session)
+    }).catch((error) => {
+      if (!mounted) return
+      setAuthError(`Unable to restore your session: ${error.message}`)
+      setIsRestoringSession(false)
+    })
+
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
+  }, [])
 
   const handleAuthSubmit = async (event) => {
     event.preventDefault()
     setIsAuthLoading(true)
     setAuthError('')
     try {
-      const response = await fetch(`${API_URL}/auth/${authMode}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(authForm)
-      })
-      const result = await readJsonResponse(response)
-      if (!response.ok) throw new Error(result.error || 'Unable to sign in.')
-      localStorage.setItem('helpnow_token', result.data.token)
-      setCurrentUser(result.data.user)
-      setAuthToken(result.data.token)
+      if (!supabase) throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in client/.env.')
+      const result = authMode === 'register'
+        ? await supabase.auth.signUp({
+          email: authForm.email.trim(),
+          password: authForm.password,
+          options: { data: { name: authForm.name.trim() } }
+        })
+        : await supabase.auth.signInWithPassword({
+          email: authForm.email.trim(),
+          password: authForm.password
+        })
+      if (result.error) throw result.error
       setAuthForm({ name: '', email: '', password: '' })
-      setAuthError('')
+      if (authMode === 'register' && !result.data.session) {
+        setAuthError('Check your email to confirm your account, then sign in.')
+      }
       if (authIntent === 'ask' || authIntent === 'voice') {
         setRequestScope('created')
         setIsCreatingRequest(true)
@@ -174,13 +190,20 @@ function App() {
     }
   }
 
-  const handleSignOut = () => {
-    localStorage.removeItem('helpnow_token')
-    setAuthToken('')
-    setCurrentUser(null)
-    setRequests([])
-    setSelectedRequestId(null)
-    setIsCreatingRequest(false)
+  const handleSignOut = async () => {
+    if (!supabase) return
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) {
+        addToast('Sign out failed', error.message, 'danger')
+        return
+      }
+      setRequests([])
+      setSelectedRequestId(null)
+      setIsCreatingRequest(false)
+    } catch (error) {
+      addToast('Sign out failed', error.message || 'Unable to end your session.', 'danger')
+    }
   }
 
   const handleVoiceDraft = () => {
@@ -267,9 +290,6 @@ function App() {
 
     socket.on('server:ready', (data) => {
       console.log('Server ready confirmation:', data)
-      if (data.database) {
-        setServerDbType(data.database)
-      }
     })
 
     // Listen for new requests
@@ -303,6 +323,11 @@ function App() {
         }
         return currId
       })
+    })
+
+    socket.on('request:removed', ({ id }) => {
+      setRequests((previous) => previous.filter((request) => request.id !== id))
+      setSelectedRequestId((currentId) => currentId === id ? null : currentId)
     })
 
     // Listen for real-time chat messages
