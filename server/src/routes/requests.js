@@ -203,7 +203,7 @@ export function registerRequestRoutes(app, io) {
         status: error?.status
       })
       response.status(503).json({
-        error: 'Cannot reach Supabase Auth. Check SUPABASE_URL and SUPABASE_ANON_KEY in server/.env, confirm the project is active and internet access is available, then restart the API.'
+        error: 'HelpNow could not verify your session with Supabase. On Render, check SUPABASE_URL and SUPABASE_ANON_KEY in the service Environment settings; locally, check server/.env. Use the URL and public anon/publishable key from the same Supabase project, then restart or redeploy the API. Check the server logs for the underlying authentication error.'
       })
       return null
     }
