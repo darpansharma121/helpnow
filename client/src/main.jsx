@@ -514,15 +514,22 @@ function App() {
   // ----------------------------------------------------
   useEffect(() => {
     if (!mapInstanceRef.current && mapRef.current) {
-      console.log('Initializing Leaflet map (light style)...')
+      console.log('Initializing Leaflet map...')
       const map = L.map(mapRef.current, {
         zoomControl: false,
         attributionControl: false
       }).setView([26.1600, 91.7650], 13.5)
 
-      // Add CartoDB Positron light style tiles fitting the creamy theme
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        maxZoom: 19
+      // Use standard OpenStreetMap tiles (100% free, no API key required)
+      // or CARTO Positron if VITE_CARTO_API_KEY is configured
+      const cartoKey = import.meta.env.VITE_CARTO_API_KEY
+      const tileUrl = cartoKey
+        ? `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${cartoKey}`
+        : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+
+      L.tileLayer(tileUrl, {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
       }).addTo(map)
 
       L.control.zoom({ position: 'bottomright' }).addTo(map)

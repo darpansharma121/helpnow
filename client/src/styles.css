@@ -70,6 +70,10 @@ button {
   background-color: #f7f4ee !important;
 }
 
+.leaflet-tile-pane {
+  filter: contrast(0.96) saturate(0.88) brightness(1.02);
+}
+
 /* Leaflet zoom control light premium overrides */
 .leaflet-bar {
   border: 1px solid #e2dcd5 !important;
