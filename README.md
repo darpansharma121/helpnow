@@ -67,7 +67,7 @@ npm run dev
 ```
 
 The client runs on `http://localhost:5173` and the API on `http://localhost:3002` by default.
-The Vite development server proxies API and Socket.IO traffic to port 3002 (chosen to avoid common local port conflicts). Replace the placeholders in `server/.env` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`) and `client/.env` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) with the dashboard values. Use the same project URL and publishable/anon key in both. `VITE_API_URL=/api/v1` keeps the existing API routing. Set `GEMINI_API_KEY` only in `server/.env` if AI classification is enabled.
+The Vite development server proxies API and Socket.IO traffic to port 3002 (chosen to avoid common local port conflicts). Replace the placeholders in `server/.env` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`) and `client/.env` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) with the dashboard values. Use the same project URL and publishable/anon key in both. `VITE_API_URL=/api/v1` keeps the existing API routing. Set `GEMINI_API_KEY` only in `server/.env` if AI classification is enabled. Set `VITE_GRAPHHOPPER_API_KEY` in `client/.env` to enable GraphHopper address search, reverse coordinate lookup, and route directions.
 
 The client uses Supabase Auth sessions for sign-up, sign-in, sign-out, and session restoration. The Express API verifies Supabase access tokens and uses the caller's token for database access so RLS remains enforced. Do not configure or expose a Supabase secret/service-role key in the client. Request assignment is performed by the `claim_help_request` PostgreSQL function, which locks the request row and prevents self-claiming or concurrent double assignment.
 
@@ -79,6 +79,7 @@ This repository includes a `render.yaml` Blueprint for one Node web service serv
 
 - `SUPABASE_URL` and `SUPABASE_ANON_KEY` are used by the Express API at runtime.
 - `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are used by Vite during the build. The anon/publishable key is public by design; never use a Supabase secret or `service_role` key in a `VITE_` variable.
+- `VITE_GRAPHHOPPER_API_KEY` is optionally supplied to enable GraphHopper geocoding, reverse geocoding, and route calculations.
 
 The Blueprint uses build command `npm ci --prefix client && npm ci --prefix server && npm run build` and start command `npm start`. The build writes `client/dist`; Express serves those assets and falls back to `index.html` for browser navigation while preserving `/api/*` and `/socket.io/*` handling. The client uses same-origin API and Socket.IO URLs in production, so do not set `VITE_API_URL` for this single-service deployment. Render supplies `PORT`; no fixed production port or `CLIENT_ORIGIN` is required.
 

@@ -17,3 +17,5 @@ services:
         sync: false
       - key: VITE_SUPABASE_ANON_KEY
         sync: false
+      - key: VITE_GRAPHHOPPER_API_KEY
+        sync: false

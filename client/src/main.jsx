@@ -51,6 +51,113 @@ async function readJsonResponse(response) {
   }
 }
 
+// GraphHopper API Key (Client-side)
+const GRAPHHOPPER_API_KEY = import.meta.env.VITE_GRAPHHOPPER_API_KEY || ''
+
+function formatGraphHopperAddress(hit) {
+  if (!hit) return ''
+  const parts = [
+    hit.name,
+    hit.street && hit.street !== hit.name ? hit.street : null,
+    hit.city,
+    hit.state,
+    hit.country
+  ].filter(Boolean)
+  const unique = parts.filter((part, idx) => parts.indexOf(part) === idx)
+  return unique.join(', ') || hit.name || 'Selected Location'
+}
+
+async function reverseGeocodeLocation(lat, lng) {
+  if (GRAPHHOPPER_API_KEY) {
+    try {
+      const url = `https://graphhopper.com/api/1/geocode?point=${lat},${lng}&reverse=true&locale=en&key=${GRAPHHOPPER_API_KEY}`
+      const response = await fetch(url)
+      if (response.ok) {
+        const data = await readJsonResponse(response)
+        if (data?.hits?.[0]) {
+          const address = formatGraphHopperAddress(data.hits[0])
+          if (address) return address
+        }
+      }
+    } catch (error) {
+      console.warn('GraphHopper reverse geocoding failed, falling back to OSM:', error)
+    }
+  }
+
+  // Graceful fallback to OpenStreetMap Nominatim
+  try {
+    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`)
+    if (response.ok) {
+      const data = await readJsonResponse(response)
+      if (data?.display_name) return data.display_name
+    }
+  } catch (error) {
+    console.warn('Nominatim reverse geocoding failed:', error)
+  }
+
+  return `Coordinates (${lat.toFixed(4)}, ${lng.toFixed(4)})`
+}
+
+async function searchGeocodeLocation(query) {
+  if (!query || !query.trim()) return []
+
+  if (GRAPHHOPPER_API_KEY) {
+    try {
+      const url = `https://graphhopper.com/api/1/geocode?q=${encodeURIComponent(query.trim())}&limit=5&locale=en&key=${GRAPHHOPPER_API_KEY}`
+      const response = await fetch(url)
+      if (response.ok) {
+        const data = await readJsonResponse(response)
+        if (Array.isArray(data?.hits) && data.hits.length > 0) {
+          return data.hits.map((hit) => ({
+            lat: hit.point.lat,
+            lon: hit.point.lng,
+            display_name: formatGraphHopperAddress(hit)
+          }))
+        }
+      }
+    } catch (error) {
+      console.warn('GraphHopper search geocoding failed, falling back to OSM:', error)
+    }
+  }
+
+  // Graceful fallback to OpenStreetMap Nominatim
+  try {
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query.trim())}&limit=5`)
+    if (response.ok) {
+      const data = await readJsonResponse(response)
+      return (data || []).map((item) => ({
+        lat: parseFloat(item.lat),
+        lon: parseFloat(item.lon),
+        display_name: item.display_name
+      }))
+    }
+  } catch (error) {
+    console.warn('Nominatim search geocoding failed:', error)
+  }
+
+  return []
+}
+
+async function fetchRoutePolyline(startLat, startLng, destLat, destLng) {
+  if (!GRAPHHOPPER_API_KEY) return null
+  try {
+    const url = `https://graphhopper.com/api/1/route?point=${startLat},${startLng}&point=${destLat},${destLng}&vehicle=car&locale=en&calc_points=true&points_encoded=false&key=${GRAPHHOPPER_API_KEY}`
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const data = await readJsonResponse(response)
+    const path = data?.paths?.[0]
+    if (!path?.points?.coordinates) return null
+    return {
+      distanceMeters: path.distance,
+      timeMs: path.time,
+      coordinates: path.points.coordinates.map(([lng, lat]) => [lat, lng])
+    }
+  } catch (error) {
+    console.warn('GraphHopper route fetch failed:', error)
+    return null
+  }
+}
+
 function App() {
   const [requests, setRequests] = useState([])
   const [authToken, setAuthToken] = useState('')
@@ -110,6 +217,9 @@ function App() {
   const mapInstanceRef = useRef(null)
   const markersRef = useRef({})
   const creationMarkerRef = useRef(null)
+  const routeLayerRef = useRef(null)
+  const [activeRouteInfo, setActiveRouteInfo] = useState(null)
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false)
 
   const activeUser = currentUser
   const activeUserRef = useRef(activeUser)
@@ -363,9 +473,14 @@ function App() {
     }
   }, [selectedRequestId, socketConnected, currentUser])
 
-  // Reset tab to info when request changes
+  // Reset tab to info and clear old route when request changes
   useEffect(() => {
     setDetailTab('info')
+    if (routeLayerRef.current && mapInstanceRef.current) {
+      mapInstanceRef.current.removeLayer(routeLayerRef.current)
+      routeLayerRef.current = null
+    }
+    setActiveRouteInfo(null)
   }, [selectedRequestId])
 
   // Initial REST Fetch
@@ -416,6 +531,10 @@ function App() {
     }
 
     return () => {
+      if (routeLayerRef.current && mapInstanceRef.current) {
+        mapInstanceRef.current.removeLayer(routeLayerRef.current)
+        routeLayerRef.current = null
+      }
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove()
         mapInstanceRef.current = null
@@ -428,7 +547,7 @@ function App() {
     const map = mapInstanceRef.current
     if (!map) return
 
-    const handleMapClick = (e) => {
+    const handleMapClick = async (e) => {
       if (isCreatingRequest) {
         const { lat, lng } = e.latlng
         setNewRequestLocation({
@@ -437,19 +556,14 @@ function App() {
           label: `Pinned Coordinates (${lat.toFixed(4)}, ${lng.toFixed(4)})`
         })
         
-        // Fetch friendly label via OSM reverse search
-        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`)
-          .then(readJsonResponse)
-          .then(data => {
-            if (data && data.display_name) {
-              setNewRequestLocation({
-                lat,
-                lng,
-                label: data.display_name
-              })
-            }
-          })
-          .catch(err => console.log('Reverse geocoding failed:', err))
+        try {
+          const label = await reverseGeocodeLocation(lat, lng)
+          if (label) {
+            setNewRequestLocation({ lat, lng, label })
+          }
+        } catch (err) {
+          console.warn('Reverse geocoding failed:', err)
+        }
       }
     }
 
@@ -547,7 +661,7 @@ function App() {
 
         const marker = L.marker([lat, lng], { icon: pinIcon, draggable: true }).addTo(map)
         
-        marker.on('dragend', () => {
+        marker.on('dragend', async () => {
           const pos = marker.getLatLng()
           setNewRequestLocation({
             lat: pos.lat,
@@ -555,18 +669,18 @@ function App() {
             label: `Coordinates (${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)})`
           })
           
-          fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.lat}&lon=${pos.lng}&zoom=16`)
-            .then(readJsonResponse)
-            .then(data => {
-              if (data && data.display_name) {
-                setNewRequestLocation({
-                  lat: pos.lat,
-                  lng: pos.lng,
-                  label: data.display_name
-                })
-              }
-            })
-            .catch(err => console.log(err))
+          try {
+            const label = await reverseGeocodeLocation(pos.lat, pos.lng)
+            if (label) {
+              setNewRequestLocation({
+                lat: pos.lat,
+                lng: pos.lng,
+                label
+              })
+            }
+          } catch (err) {
+            console.warn('Reverse geocode failed on drag:', err)
+          }
         })
 
         creationMarkerRef.current = marker
@@ -614,17 +728,14 @@ function App() {
         })
 
         try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=16`)
-          if (res.ok) {
-            const data = await readJsonResponse(res)
-            if (data && data.display_name) {
-              setNewRequestLocation({
-                lat: latitude,
-                lng: longitude,
-                label: data.display_name
-              })
-              addToast('GPS Located', `Location resolved: ${data.display_name.split(', ')[0] || 'My Area'}`, 'success')
-            }
+          const label = await reverseGeocodeLocation(latitude, longitude)
+          if (label) {
+            setNewRequestLocation({
+              lat: latitude,
+              lng: longitude,
+              label
+            })
+            addToast('GPS Located', `Location resolved: ${label.split(', ')[0] || 'My Area'}`, 'success')
           }
         } catch (err) {
           console.error(err)
@@ -862,19 +973,81 @@ function App() {
     }
   }, [selectedRequest?.messages, detailTab])
 
-  // Handle manual map search using Nominatim OpenStreetMap engine
+  // Clear currently rendered GraphHopper route
+  const clearRoute = () => {
+    if (routeLayerRef.current && mapInstanceRef.current) {
+      mapInstanceRef.current.removeLayer(routeLayerRef.current)
+      routeLayerRef.current = null
+    }
+    setActiveRouteInfo(null)
+  }
+
+  // Calculate driving route using GraphHopper Routing API
+  const handleCalculateRoute = async (targetRequest) => {
+    if (!targetRequest?.location?.lat || !targetRequest?.location?.lng) return
+    if (!GRAPHHOPPER_API_KEY) {
+      addToast('GraphHopper Required', 'Set VITE_GRAPHHOPPER_API_KEY in client/.env to enable routing.', 'warning')
+      return
+    }
+
+    setIsLoadingRoute(true)
+    const doRoute = async (startLat, startLng) => {
+      try {
+        const route = await fetchRoutePolyline(startLat, startLng, targetRequest.location.lat, targetRequest.location.lng)
+        if (!route) {
+          addToast('Routing Failed', 'GraphHopper could not calculate a driving route to this destination.', 'warning')
+          return
+        }
+
+        if (routeLayerRef.current && mapInstanceRef.current) {
+          mapInstanceRef.current.removeLayer(routeLayerRef.current)
+          routeLayerRef.current = null
+        }
+
+        if (mapInstanceRef.current) {
+          const polyline = L.polyline(route.coordinates, {
+            color: '#FF4F6D',
+            weight: 5,
+            opacity: 0.85,
+            dashArray: '8, 8'
+          }).addTo(mapInstanceRef.current)
+          routeLayerRef.current = polyline
+          mapInstanceRef.current.fitBounds(polyline.getBounds(), { padding: [40, 40] })
+        }
+
+        setActiveRouteInfo(route)
+        const km = (route.distanceMeters / 1000).toFixed(1)
+        const mins = Math.max(1, Math.round(route.timeMs / 60000))
+        addToast('Route Calculated', `${km} km (~${mins} mins) via GraphHopper Directions.`, 'success')
+      } catch (err) {
+        console.error('Route calculation error:', err)
+        addToast('Routing Error', 'Failed to retrieve route from GraphHopper.', 'danger')
+      } finally {
+        setIsLoadingRoute(false)
+      }
+    }
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => doRoute(pos.coords.latitude, pos.coords.longitude),
+        () => doRoute(26.1600, 91.7650),
+        { timeout: 5000 }
+      )
+    } else {
+      doRoute(26.1600, 91.7650)
+    }
+  }
+
+  // Handle manual map search (GraphHopper Geocoding with OSM fallback)
   const handleMapSearchSubmit = async () => {
     if (!mapSearchQuery.trim()) return
     setIsSearchingMap(true)
     setMapSearchResults([])
     try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(mapSearchQuery.trim())}&limit=5`)
-      if (res.ok) {
-        const data = await readJsonResponse(res)
-        setMapSearchResults(data)
-        if (data.length === 0) {
-          addToast('No Results', 'Could not find that location on the map.', 'warning')
-        }
+      const results = await searchGeocodeLocation(mapSearchQuery.trim())
+      setMapSearchResults(results)
+      if (results.length === 0) {
+        addToast('No Results', 'Could not find that location on the map.', 'warning')
       }
     } catch (err) {
       console.error(err)
@@ -886,8 +1059,8 @@ function App() {
 
   // Handle selecting a geocoding result
   const handleSelectMapSearchResult = (result) => {
-    const lat = parseFloat(result.lat)
-    const lng = parseFloat(result.lon)
+    const lat = typeof result.lat === 'number' ? result.lat : parseFloat(result.lat)
+    const lng = typeof result.lon === 'number' ? result.lon : parseFloat(result.lon)
     
     if (mapInstanceRef.current) {
       mapInstanceRef.current.setView([lat, lng], 15)
@@ -1352,10 +1525,32 @@ function App() {
                   {/* Location details */}
                   <div className="bg-[#faf8f5] border border-[#e8ded5]/65 p-3 rounded-xl flex items-start gap-2.5 shadow-3xs">
                     <MapPin className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                    <div className="text-3xs">
+                    <div className="text-3xs flex-1">
                       <p className="font-extrabold text-slate-700">Approximate location</p>
                       <p className="text-slate-505 mt-0.5 leading-relaxed">{selectedRequest.location?.label || 'Approximate area'}</p>
                       <p className="text-4xs text-slate-400 mt-1">The exact address is not shared with other members.</p>
+                      {GRAPHHOPPER_API_KEY && (
+                        <div className="mt-2.5 pt-2 border-t border-[#e8ded5]/50 flex items-center justify-between">
+                          <button
+                            type="button"
+                            disabled={isLoadingRoute}
+                            onClick={() => handleCalculateRoute(selectedRequest)}
+                            className="text-4xs font-bold text-rose-600 bg-rose-50 border border-rose-200 hover:bg-rose-100 px-2.5 py-1 rounded-md flex items-center gap-1.5 transition-all disabled:opacity-50"
+                          >
+                            <Navigation className={`w-3 h-3 ${isLoadingRoute ? 'animate-spin' : ''}`} />
+                            {isLoadingRoute ? 'Calculating route…' : activeRouteInfo ? 'Recalculate Route' : 'Show Route (GraphHopper)'}
+                          </button>
+                          {activeRouteInfo && (
+                            <button
+                              type="button"
+                              onClick={clearRoute}
+                              className="text-4xs font-bold text-slate-400 hover:text-slate-600"
+                            >
+                              Clear Route
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1794,8 +1989,31 @@ function App() {
                 <span className="h-1.5 w-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
                 Neighborhood Help Map
               </p>
-              <p className="text-4xs text-slate-500 font-mono mt-0.5">Leaflet OSM Light · Positron</p>
+              <p className="text-4xs text-slate-500 font-mono mt-0.5">
+                {GRAPHHOPPER_API_KEY ? 'GraphHopper Engine · Leaflet' : 'Leaflet OSM Light · Positron'}
+              </p>
             </div>
+
+            {/* Active GraphHopper Route Banner on Map */}
+            {activeRouteInfo && (
+              <div className="absolute bottom-6 left-4 bg-white/95 backdrop-blur-md border border-rose-200 px-3.5 py-2.5 rounded-xl z-20 shadow-md flex items-center gap-3 animate-slide-up">
+                <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping shrink-0" />
+                <div>
+                  <p className="text-2xs font-extrabold text-slate-800">
+                    Route: {(activeRouteInfo.distanceMeters / 1000).toFixed(1)} km · ~{Math.max(1, Math.round(activeRouteInfo.timeMs / 60000))} min drive
+                  </p>
+                  <p className="text-5xs text-rose-500 font-bold uppercase tracking-wider">Directions by GraphHopper</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearRoute}
+                  className="ml-2 text-3xs font-bold text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-100"
+                  title="Clear route"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         )}
 
